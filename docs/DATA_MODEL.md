@@ -30,8 +30,11 @@ DATA_MODEL은 구현 전에 다음을 확정하기 위한 기준 문서다.
 - 무엇을 저장하고 무엇을 저장하지 않는가
 
 실제 table DDL은
-공식 모집요강 1~2개에 이 모델을 적용해 검증한 뒤
-별도 schema 단계에서 확정한다.
+2027학년도 연세대학교 서울캠퍼스와
+고려대학교 서울캠퍼스 공식 자료로 검증한 결과를
+반영한 뒤, 별도 schema 단계에서 확정한다.
+
+검증 근거는 `docs/DATA_MODEL_VALIDATION_2027.md`를 참조한다.
 
 
 # 2. 핵심 설계 원칙
@@ -129,18 +132,39 @@ AdmissionTrack은 이번 MVP의 필수 entity가 아니다.
 
 역할:
 
-대한민국 대학 자체를 표현한다.
+MVP에서는 University를
+대한민국 대학명 자체만이 아니라
+입학전형을 정확히 귀속시킬 수 있는
+대학/캠퍼스 단위로 사용한다.
 
 필드 초안:
 
 - id
 - name_ko
 - name_en (nullable)
+- campus_name (nullable)
+- display_name
 - slug
 - official_website_url
 - admissions_office_url
 - created_at
 - updated_at
+
+이름 구분:
+
+name_ko
+= 대학의 기본 공식 명칭
+
+campus_name
+= 입학전형 및 공식 입학처를 구분하기 위해
+  캠퍼스 구분이 필요한 경우 사용
+
+display_name
+= 사이트 UI에서 대학/캠퍼스를
+  사용자가 혼동하지 않도록 표시하는 이름
+
+display_name은 공식 의미를 바꾸거나
+새로운 대학을 만들어내는 용도로 사용하지 않는다.
 
 원칙:
 
@@ -152,6 +176,63 @@ University.admissions_office_url은
 
 입학처 홈페이지는 대학의 공식 창구이고,
 모집요강 PDF/공지 URL은 특정 학년도 자료다.
+
+서로 다른 입학처 또는 모집요강을 운영하는 캠퍼스를
+동일한 University record로 무조건 합치지 않는다.
+
+AdmissionProgram이
+잘못된 캠퍼스의 SourceDocument와 연결되는 것을
+방지할 수 있어야 한다.
+
+campus 식별은 단순 UI 표시 문제가 아니라
+다른 모집요강, 지원자격, 일정, source를 연결하는
+데이터 정확성 문제다.
+
+
+## University identity
+
+slug나 display_name을 영구 identity로 사용하지 않는다.
+
+향후 DB에서는 immutable primary key를 사용한다.
+
+캠퍼스 구분이 필요한 경우
+name_ko + campus_name과 같은 조합은
+사람이 이해하는 uniqueness 판단에 활용할 수 있다.
+
+이를 실제 PK로 사용한다고 확정하지 않는다.
+
+
+## MVP campus 표현
+
+이번 MVP에서는 별도 Campus entity를
+필수로 도입하지 않는다.
+
+이유:
+
+- 초기 구조를 단순하게 유지한다.
+- 2027학년도 연세대학교 서울캠퍼스와
+  고려대학교 서울캠퍼스 검증에서는
+  University record에 campus discriminator를 두는 방식으로
+  정확한 source 귀속이 가능할 가능성이 높다.
+
+이 결정은 모든 대학에 대한 영구 결론이 아니라
+MVP의 초기 normalization 전략이다.
+
+
+## 향후 확장 포인트: Campus
+
+다음 상황이 반복되면 향후
+
+University
+1 → N Campus
+
+구조를 검토한다.
+
+- 여러 캠퍼스가 대학 공통 메타데이터를 대량 공유한다.
+- 캠퍼스별 AdmissionProgram과 admissions office가 별도 운영된다.
+- campus 정보를 여러 entity에서 반복 저장하게 된다.
+
+이번 단계에서는 Campus entity를 확정하지 않는다.
 
 
 # 5. AdmissionCategory
@@ -299,6 +380,22 @@ AdmissionProgram
 AdmissionTrack은 현재 핵심 entity 목록에 포함하지 않는다.
 현재 비교와 자격진단의 최소 단위는 AdmissionProgram이다.
 
+2027학년도 연세대학교 서울캠퍼스와
+고려대학교 서울캠퍼스 검증에서는
+AdmissionTrack 도입 필요성이 확인되지 않았다.
+
+그러나 이것을 전체 대학 또는 다른 학년도로 일반화하지 않는다.
+
+추가 대학 검증에서
+
+- 공통 일정
+- 공통 평가
+- 공통 서류
+
+를 공유하면서 eligibility만 독립적으로 반복되고,
+AdmissionProgram 분리 시 중복이 과도해지는 구조가
+반복적으로 발견될 경우 AdmissionTrack을 재검토한다.
+
 
 # 7. AdmissionSection
 
@@ -338,6 +435,41 @@ AdmissionTrack은 현재 핵심 entity 목록에 포함하지 않는다.
 관계:
 
 AdmissionProgram 1 → N AdmissionSection
+
+
+## AdmissionSection granularity
+
+eligibility 하나만으로도
+여러 하위 주제가 존재할 수 있다.
+
+따라서 AdmissionProgram + section_type 조합을
+unique하게 만들면 안 된다.
+
+하나의 AdmissionProgram에
+section_type = eligibility인
+AdmissionSection이 여러 개 존재할 수 있어야 한다.
+
+구조 예:
+
+AdmissionProgram
+ ├─ eligibility / display_order 1
+ ├─ eligibility / display_order 2
+ ├─ eligibility / display_order 3
+ ├─ evaluation
+ └─ other_conditions
+
+위 예는 구조만 보여 주기 위한 것이며
+실제 입시조건 예시가 아니다.
+
+기존 필드 title과 display_order를 이용해
+같은 section_type 안에서도
+의미 있는 순서와 제목을 표현할 수 있다.
+
+필요한 경우 향후 section_key 등의
+안정적인 내부 identifier를 검토할 수 있다.
+이번 단계에서는 필수 필드로 확정하지 않는다.
+
+새 subsection entity를 바로 추가하지 않는다.
 
 
 ## AdmissionSection 구조 vs 긴 text column
@@ -388,11 +520,37 @@ AdmissionSection의 단점:
 - description
 - requirement_status
 - condition
+- submission_phase (nullable)
 - display_order
 - verification_status
 - verified_at
 
 하나의 전형에 여러 제출서류가 존재할 수 있다.
+
+제출서류는
+단순히 "어떤 문서를 내는가"뿐 아니라
+"언제/어느 단계에서 내는가"도 중요하다.
+
+submission_phase는
+같은 전형에서 서류가
+서로 다른 제출 단계에 요구될 수 있음을 표현한다.
+
+실제 submission_phase enum 값은
+이번 단계에서 확정하지 않는다.
+
+제출 기한이 특정 AdmissionSchedule event와
+연결될 필요가 있을 수 있다.
+RequiredDocument → optional AdmissionSchedule relation
+가능성은 schema 단계에서 검토한다.
+
+한 RequiredDocument가
+여러 submission phase 또는 여러 schedule event와
+연결되는 사례가 반복될 경우에는
+별도의 submission entity 또는 join structure가
+필요할 수 있다.
+
+이번 DATA_MODEL에서는
+그 새 entity를 필수로 추가하지 않는다.
 
 requirement_status의 실제 enum은
 Supabase schema 단계에서 결정한다.
@@ -403,6 +561,9 @@ WIREFRAME에서 검토한 개념 예:
 - 확인 필요
 
 실제 제출서류명은 이번 문서에 작성하지 않는다.
+
+확인되지 않은 제출 단계를
+임의로 생성하지 않는다.
 
 
 # 9. AdmissionSchedule
@@ -473,6 +634,7 @@ AdmissionProgram
 - published_at (nullable)
 - last_checked_at
 - document_version_label (nullable)
+- supersedes_source_document_id (nullable)
 - notes
 - created_at
 - updated_at
@@ -487,23 +649,77 @@ academic_year가 null일 수 있는 이유:
 특정 학년도 공식정보처럼 표시하지 않는다.
 
 
+## SourceDocument revision lineage
+
+공식 모집요강 수정본을 추적하는 것은
+단순한 미래 고려사항이 아니라
+schema 전에 반드시 고려해야 하는 요구사항이다.
+
+2027학년도 공식 자료 검증에서
+수정본/revision이 표시된 사례가 확인되었다.
+
+document_version_label은 유지한다.
+
+개념적으로 다음 관계를 검토한다.
+
+- supersedes_source_document_id (nullable)
+
+의미:
+
+현재 SourceDocument가
+이전 공식 SourceDocument를 대체/수정하는 관계를 표현한다.
+
+예:
+
+SourceDocument A
+        ↓ superseded by
+SourceDocument B
+
+원칙:
+
+- 이전 source를 삭제하지 않는다.
+- 수정본이 생겼다고 과거 source record를 덮어쓰지 않는다.
+- 어느 version을 근거로 검증했는지 추적 가능해야 한다.
+
+실제 self-referencing FK 여부와 이름은
+schema 단계에서 최종 확정한다.
+
+
+## SourceDocument current 상태
+
+"최신 source"와 "유효 source"가
+항상 단순히 published_at이 가장 최근인 문서라고
+가정해서는 안 된다.
+
+향후 schema에서
+
+- revision relationship
+- publication/update metadata
+- verification status
+
+를 이용해 어떤 source가 현재 기준인지
+판단할 수 있어야 한다.
+
+is_current 같은 boolean을 둘지는
+아직 확정하지 않는다.
+
+
 ## Source snapshot에 대한 notes
 
 향후 source URL의 내용이 변경될 가능성을 고려한다.
 
 검토할 수 있는 확장:
 
-- document_version_label
 - checksum/hash
 - snapshot 저장
-- superseded source relationship
 
 MVP에서는 실제 snapshot 저장을
 반드시 구현하는 것으로 확정하지 않는다.
 
 첫 구현에서는
-source_url, last_checked_at, document_version_label로
-추적 가능성을 열어 두는 것을 권장한다.
+source_url, last_checked_at, document_version_label,
+supersedes_source_document_id로
+revision lineage를 추적할 수 있게 하는 것을 권장한다.
 
 
 # 11. SourceCitation
@@ -517,11 +733,42 @@ SourceDocument 안에서
 
 - id
 - source_document_id
-- page
-- section
-- anchor_description
+- file_page_number (nullable)
+- printed_page_label (nullable)
+- section (nullable)
+- anchor_description (nullable)
 - verified_at
 - created_at
+
+기존 단일 page 필드는
+PDF 운영에서 충분하지 않을 수 있다.
+
+새 구조로 대체하거나 deprecated candidate로 둔다.
+
+의미:
+
+file_page_number
+= PDF 파일 자체에서의 실제 페이지 순번
+
+printed_page_label
+= 문서 내부에 인쇄되어 있는 페이지 번호 또는 라벨
+
+PDF에서는
+실제 PDF 파일 페이지 순번과
+문서 내부에 인쇄된 페이지 번호/라벨이
+다를 수 있다.
+
+둘을 동일 개념으로 가정하지 않는다.
+
+HTML 문서 등 페이지 번호가 없는 source에서는
+section / anchor_description을 사용한다.
+
+file_page_number, printed_page_label,
+section, anchor_description은 모두 nullable로 두고
+문서 형태에 맞게 채운다.
+
+실제 PostgreSQL field type과 최종 field 이름은
+아직 결정하지 않는다.
 
 예:
 
@@ -529,18 +776,15 @@ SourceDocument
 = 모집요강 전체 PDF
 
 SourceCitation
-= 해당 PDF의 특정 page 또는 section
-
-페이지가 없는 HTML 문서는
-section 또는 anchor_description을 사용할 수 있어야 한다.
-
-page, section, anchor_description은 모두 nullable로 두고
-문서 형태에 맞게 채운다.
+= 해당 PDF의 특정 file page, printed page, 또는 section
 
 
 # 12. Source 연결 구조
 
 SourceDocument와 AdmissionProgram은 1:1이 아니다.
+
+2027학년도 공식 자료 검증에서도
+이 N ↔ N 관계가 확인되었다.
 
 하나의 SourceDocument는
 여러 AdmissionProgram의 근거가 될 수 있다.
@@ -735,6 +979,19 @@ updated_at만 바뀌고 verified_at은 유지될 수 있다.
 해당 섹션의 SourceCitation과 child verified_at을 사용한다.
 
 
+## Source revision과 verification
+
+새로운 source revision이 발견됐다고 해서
+기존 AdmissionProgram 전체가 자동으로
+재검증된 것으로 처리하지 않는다.
+
+영향을 받은 section/document/schedule 등을
+다시 확인해야 한다.
+
+AdmissionProgram.verified_at은
+그 재검토가 완료된 경우에만 갱신한다.
+
+
 # 16. EligibilityRule
 
 EligibilityRule은
@@ -899,6 +1156,7 @@ erDiagram
     AdmissionProgram ||--o{ RequiredDocument : has
     AdmissionProgram ||--o{ AdmissionSchedule : has
     AdmissionProgram ||--o{ EligibilityRule : has
+    SourceDocument |o--o| SourceDocument : supersedes
     SourceDocument ||--o{ SourceCitation : contains
     AdmissionProgram }o--o{ SourceCitation : cites
     AdmissionSection }o--o{ SourceCitation : cites
@@ -922,9 +1180,11 @@ erDiagram
 - AdmissionProgram 1 → N EligibilityRule
 - SourceDocument N ↔ N AdmissionProgram
 - SourceDocument 1 → N SourceCitation
+- SourceDocument는 이전 SourceDocument를 supersede할 수 있다
 - 각 source-traceable entity N ↔ N SourceCitation
 - Faq N ↔ N SourceCitation
 - ParentStory는 공식 admission facts와 별도의 content 영역
+- Campus와 AdmissionTrack은 현재 필수 entity가 아니다
 
 
 # 22. 주요 Data Invariant
@@ -957,6 +1217,21 @@ erDiagram
 10. 실제 대학 입시정보를
     placeholder 또는 demo 목적으로 임의 생성하지 않는다.
 
+11. 다른 campus의 SourceDocument를
+    AdmissionProgram에 잘못 연결하지 않는다.
+
+12. SourceDocument 수정본이 생겼다고
+    이전 source를 삭제하거나 덮어쓰지 않는다.
+
+13. 같은 section_type을 가진 AdmissionSection이
+    여러 개 존재할 수 있다.
+
+14. PDF file page와 printed page를
+    동일 개념으로 가정하지 않는다.
+
+15. submission phase가 확인되지 않은 RequiredDocument에
+    임의의 제출 단계를 생성하지 않는다.
+
 
 # 23. 대학비교 지원
 
@@ -984,11 +1259,15 @@ DATA_MODEL은 동일 academic_year의
 동일 비교 집합에 넣지 않는다.
 
 
-# 24. 향후 Source Versioning
+# 24. Source Versioning
 
 입시 자료가 변경 또는 교체될 가능성을 고려한다.
 
-향후 검토 항목:
+모집요강 revision lineage는
+단순한 미래 고려사항이 아니라
+schema 전에 반드시 고려해야 하는 요구사항이다.
+
+검토 항목:
 
 - 동일 URL의 PDF 교체
 - 정정 공지
@@ -998,13 +1277,16 @@ DATA_MODEL은 동일 academic_year의
 - source snapshot
 - superseded source relationship
 
-MVP 첫 구현에서
-모두 구현할 필요는 없지만
-나중에 확장 가능하도록 고려한다.
+MVP 첫 구현에서 snapshot 저장까지
+모두 구현할 필요는 없다.
+
+다만 revision lineage는
+schema 설계 전에 표현 방식을 결정해야 한다.
 
 현재 모델의 확장 지점:
 
 - SourceDocument.document_version_label
+- SourceDocument.supersedes_source_document_id
 - SourceDocument.last_checked_at
 - SourceDocument.notes
 - SourceCitation.verified_at
@@ -1030,7 +1312,48 @@ MVP에서 full audit log 구현은
 아직 확정하지 않는다.
 
 
-# 26. MVP에서 우선 구현할 데이터 영역
+# 26. 실제 모집요강 검증 결과
+
+2027학년도 공식 자료를 이용해
+현재 DATA_MODEL이 실제 대학 전형 구조를
+충분히 표현할 수 있는지 검증했다.
+
+자세한 검증 근거는
+`docs/DATA_MODEL_VALIDATION_2027.md`를 참조한다.
+
+
+## 검증 범위
+
+- academic_year: 2027
+- 연세대학교 서울캠퍼스
+- 고려대학교 서울캠퍼스
+
+공식 자료만 이용하여 검증했다.
+다른 캠퍼스 또는 다른 학년도 자료는
+규정 근거로 사용하지 않았다.
+
+
+## 결론
+
+B. 소폭 수정 후 사용 가능
+
+
+## 검증으로 보완된 핵심 사항
+
+1. campus 식별
+2. AdmissionSection granularity
+3. RequiredDocument submission phase
+4. SourceCitation page representation
+5. SourceDocument revision lineage
+
+AdmissionTrack은
+이번 검증 범위에서는 필요성이 확인되지 않았으나
+향후 추가 검증 대상이다.
+
+이 결론을 다른 대학 또는 다른 학년도로 일반화하지 않는다.
+
+
+# 27. MVP에서 우선 구현할 데이터 영역
 
 데이터 모델 전체를 설계하되
 첫 구현의 우선순위는 database 구축 순서를 의미한다.
@@ -1046,10 +1369,20 @@ P0:
 - SourceDocument
 - SourceCitation
 
+P0의 University / SourceDocument / SourceCitation 설계 시
+다음을 schema 설계 전에 반드시 해결해야 한다.
+
+- campus discriminator
+- source revision
+- citation page representation
+
 P1:
 
 - RequiredDocument
 - AdmissionSchedule
+
+P1 RequiredDocument 구현 시
+submission phase를 함께 검토해야 한다.
 
 P2:
 
@@ -1072,7 +1405,21 @@ EligibilityRule은 사람용 설명과 분리해야 하므로
 공식 규정 텍스트가 먼저 검증된 뒤 설계하는 것이 안전하다.
 
 
-# 27. 이번 단계에서 결정하지 않을 사항
+# 28. Schema 단계 전 결정사항
+
+
+## Schema 전에 반드시 결정
+
+이번 검증으로 검토 필요성이 확인된 사항이다.
+
+1. University campus 표현 방식
+2. RequiredDocument submission phase 구현
+3. SourceDocument revision relationship
+4. SourceCitation PDF page 표현
+5. AdmissionSection multiple same-type 구조
+
+
+## 아직 결정하지 않는 사항
 
 다음은 아직 확정하지 않는다.
 
@@ -1100,33 +1447,36 @@ EligibilityRule은 사람용 설명과 분리해야 하므로
 - EligibilityRule JSON schema
 - AdmissionCategory 실제 값
 - requirement_status 최종 enum
+- submission_phase 최종 enum
+- is_current boolean 채택 여부
+- Campus entity 도입 여부
 - AdmissionTrack 도입 여부
 
 
-# 28. 다음 단계 권고
+# 29. 다음 단계 권고
 
-DATA_MODEL 설계 후 다음 순서를 권고한다.
+DATA_MODEL 이후 권고 순서는 다음과 같다.
 
-1. 초기 데이터 구축 범위 결정
-2. 대상 대학 결정
-3. 대상 academic_year 결정
-4. 초기 admission 범위 결정
-5. 실제 공식 자료를 이용한 데이터 모델 검증
-6. DB 기술 선택 최종 확인
-7. Supabase/PostgreSQL schema 설계
+1. DATA_MODEL 검증 결과 반영 완료
+2. MVP 초기 데이터 범위 결정
+3. 최초 대상 대학 결정
+4. 최초 대상 academic_year 결정
+5. 최초 admission 범위 결정
+6. PostgreSQL/Supabase schema 설계
+7. schema를 실제 공식 자료 몇 건으로 재확인
 8. migration 생성
 9. 검증된 초기 데이터 입력
-10. UI와 연결
+10. UI 연결
 
 중요:
 
-DATA_MODEL이 이론적으로 좋아 보여도
-실제 대학 공식 모집요강 1~2개에 적용해보고
-구조가 충분한지 검증한 뒤
-database schema를 확정해야 한다.
+2027학년도 연세대학교 서울캠퍼스와
+고려대학교 서울캠퍼스 공식 자료 검증은 완료되었다.
 
-실제 공식 모집요강을 적용할 때
-다음을 반드시 검증한다.
+database schema를 확정하기 전에
+위 Schema 전 필수 결정사항을 먼저 정리해야 한다.
+
+추가 대학 검증에서 확인할 것:
 
 - 하나의 SourceDocument에 몇 개 AdmissionProgram이 필요한가
 - 하나의 AdmissionProgram 내부에 sub-track이 필요한가
@@ -1134,12 +1484,5 @@ database schema를 확정해야 한다.
 - program을 분리했을 때 데이터 중복이 과도한가
 - 현재 구조만으로 대학별 실제 전형 체계를 손실 없이 표현할 수 있는가
 
-이 검증 결과에 따라
-AdmissionTrack 등 추가 normalization을 결정한다.
-
-추가로 확인할 것:
-
-- section_type이 실제 모집요강 목차와 맞는지
-- SourceCitation의 page/section/anchor가 충분한지
-- 제출서류와 일정이 반복 entity로 잘 들어가는지
-- 해석이 필요한 조항을 EligibilityRule로 무리하게 넣지 않는지
+이 추가 검증 결과에 따라
+AdmissionTrack 등 추가 normalization을 재검토한다.
