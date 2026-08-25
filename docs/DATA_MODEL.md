@@ -15,6 +15,21 @@ database instance는 생성하지 않는다.
 이 문서는 `AGENTS.md`, `docs/MVP_SPEC.md`,
 `docs/SITE_MAP.md`, `docs/WIREFRAME.md`의 요구사항을 충족하도록 작성한다.
 
+KU + Yonsei 2027 schema validation 이후
+`docs/DB_SCHEMA_DRAFT.md`에서 확정된 conceptual 변화를
+이 문서에 동기화한다.
+
+DATA_MODEL.md는 conceptual source of truth다.
+DB_SCHEMA_DRAFT.md는 그 conceptual model을
+PostgreSQL 구현 관점에서 구체화한 logical schema다.
+
+두 문서는 핵심 entity와 relation 관점에서
+동일한 방향을 가진다.
+
+UUID default function, CHECK syntax, trigger, index,
+exact FK action 같은 구현 세부는
+DB_SCHEMA_DRAFT / SQL 단계에서 다룬다.
+
 실제 대학 입시정보, 실제 모집요강, 실제 eligibility rule,
 실제 source URL은 작성하지 않는다.
 
@@ -29,12 +44,17 @@ DATA_MODEL은 구현 전에 다음을 확정하기 위한 기준 문서다.
 - 대학비교와 자격진단이 어떤 데이터를 읽는가
 - 무엇을 저장하고 무엇을 저장하지 않는가
 
-실제 table DDL은
-2027학년도 연세대학교 서울캠퍼스와
-고려대학교 서울캠퍼스 공식 자료로 검증한 결과를
-반영한 뒤, 별도 schema 단계에서 확정한다.
+실제 table DDL은 아직 작성하지 않는다.
 
-검증 근거는 `docs/DATA_MODEL_VALIDATION_2027.md`를 참조한다.
+검증 근거:
+
+- `docs/DATA_MODEL_VALIDATION_2027.md`
+- `docs/DB_SCHEMA_VALIDATION_KU_2027.md`
+- `docs/DB_SCHEMA_VALIDATION_YONSEI_2027.md`
+- `docs/DB_SCHEMA_DRAFT.md`
+
+이번 문서는 그 validation 이후
+post-validation conceptual refinement를 반영한다.
 
 
 # 2. 핵심 설계 원칙
@@ -89,6 +109,29 @@ verified_at:
 개별 section verification도 구분 가능하도록 한다.
 
 
+## 2.5 Campus identity와 event venue 구분
+
+University.campus_name
+= 입학전형을 운영하는 campus identity
+
+AdmissionSchedule.location_text
+= 면접/시험/서류제출 등의 실제 event venue
+
+둘은 같은 개념이 아니다.
+
+
+## 2.6 Logical document와 submission event 구분
+
+RequiredDocument
+= 무엇을 제출해야 하는가
+
+DocumentSubmission
+= 언제 / 어떻게 / 어떤 형태로 제출하는가
+
+한 logical document를
+제출 단계 때문에 복제하지 않는다.
+
+
 # 3. Entity 개요
 
 기본 모델은 다음 entity로 구성한다.
@@ -98,12 +141,23 @@ verified_at:
 3. AdmissionProgram
 4. AdmissionSection
 5. RequiredDocument
-6. AdmissionSchedule
-7. SourceDocument
-8. SourceCitation
-9. EligibilityRule
-10. Faq
-11. ParentStory
+6. DocumentSubmission
+7. RequiredDocumentChoiceGroup
+8. AdmissionSchedule
+9. SourceDocument
+10. SourceCitation
+11. EligibilityRule
+12. Faq
+13. ParentStory
+
+RequiredDocumentChoiceGroup은
+KU + Yonsei 양쪽에서 alternative document pattern이 반복되어
+initial core conceptual structure로 승격되었다.
+
+ChoiceGroupItem은
+RequiredDocumentChoiceGroup과 RequiredDocument를 잇는
+join relation이다.
+독립 핵심 entity 번호로 올리지 않는다.
 
 join relation 개요:
 
@@ -111,14 +165,19 @@ join relation 개요:
 - AdmissionCategory 1 → N AdmissionProgram
 - AdmissionProgram 1 → N AdmissionSection
 - AdmissionProgram 1 → N RequiredDocument
+- RequiredDocument 1 → N DocumentSubmission
+- DocumentSubmission N → 0..1 AdmissionSchedule
 - AdmissionProgram 1 → N AdmissionSchedule
+- AdmissionProgram 1 → N RequiredDocumentChoiceGroup
+- RequiredDocumentChoiceGroup N ↔ N RequiredDocument
 - AdmissionProgram 1 → N EligibilityRule
 - University 1 → N SourceDocument (nullable)
-- SourceDocument N ↔ N AdmissionProgram
+- AdmissionProgram N ↔ N SourceDocument
 - SourceDocument 1 → N SourceCitation
-- source-traceable entity N ↔ N SourceCitation
-  (AdmissionProgram, AdmissionSection, RequiredDocument,
-  AdmissionSchedule, EligibilityRule, Faq)
+- core citation targets N ↔ N SourceCitation
+  (AdmissionSection, RequiredDocument,
+  DocumentSubmission, AdmissionSchedule)
+- 향후 citation targets: EligibilityRule, Faq
 
 ParentStory는 공식 admission facts와 별도의 content 영역이다.
 
@@ -126,6 +185,11 @@ DiagnosisSession은 MVP에서 필수 persistent entity로 포함하지 않는다
 
 AdmissionTrack은 이번 MVP의 필수 entity가 아니다.
 향후 확장 포인트로만 기록한다.
+
+Campus entity, structured applicability model,
+structured document subject lookup,
+evaluation child tables, source conflict entity,
+source URL alias model도 현재 core가 아니다.
 
 
 # 4. University
@@ -188,6 +252,16 @@ campus 식별은 단순 UI 표시 문제가 아니라
 다른 모집요강, 지원자격, 일정, source를 연결하는
 데이터 정확성 문제다.
 
+University.campus_name은
+입학전형을 운영하는 campus identity다.
+
+AdmissionSchedule.location_text는
+면접/시험/서류제출 등의 실제 event venue다.
+
+둘은 같은 개념이 아니다.
+campus identity를 venue로 쓰지 않고,
+venue를 campus identity로 쓰지 않는다.
+
 
 ## University identity
 
@@ -200,6 +274,12 @@ name_ko + campus_name과 같은 조합은
 사람이 이해하는 uniqueness 판단에 활용할 수 있다.
 
 이를 실제 PK로 사용한다고 확정하지 않는다.
+
+initial schema에서
+name_ko + campus_name composite uniqueness를
+DB constraint로 두지 않는 방향은
+DB_SCHEMA_DRAFT를 따른다.
+구현 세부는 schema/SQL 단계에서 다룬다.
 
 
 ## MVP campus 표현
@@ -328,23 +408,28 @@ SourceDocument N ↔ N AdmissionProgram
 
 고유성:
 
-다음 조합은 route/URL 기준으로
-하나의 전형 identity를 형성하도록 한다.
-
-- university_id
-- academic_year
-- admission_slug
+university_id + academic_year + admission_slug는
+routing uniqueness다.
 
 admission_slug는 route/URL identifier다.
+immutable identity는 별도의 id다.
 
 slug가 바뀌었다고 해서
 전형 자체의 역사적 identity가 달라지는 것은 아니다.
 
-향후 DB 구현 시
-immutable primary key를 별도로 사용해야 한다.
-university_id + academic_year + admission_slug는
-자연키/조회키로 유지할 수 있지만,
-id는 변경되지 않는 식별자로 둔다.
+이 routing uniqueness는
+semantic/historical identity가 아니다.
+
+관계의 semantic meaning:
+
+AdmissionProgram N ↔ N SourceDocument
+= 이 official source가 어떤 AdmissionProgram에 적용되는가
+
+Entity ↔ SourceCitation
+= 특정 fact의 정확한 근거 위치가 어디인가
+
+둘은 provenance의 서로 다른 레이어다.
+동일 개념으로 취급하지 않는다.
 
 같은 대학의 같은 전형명이라도
 학년도가 다르면 다른 AdmissionProgram이다.
@@ -424,6 +509,7 @@ AdmissionProgram 분리 시 중복이 과도해지는 구조가
 - section_type
 - title
 - content
+- applicability_text (nullable)
 - information_type
 - availability_status
 - verification_status
@@ -435,6 +521,30 @@ AdmissionProgram 분리 시 중복이 과도해지는 구조가
 관계:
 
 AdmissionProgram 1 → N AdmissionSection
+
+
+## applicability_text
+
+같은 AdmissionProgram 안에서도
+특정 계열 / 모집단위 / 대상 등에만
+해당 section이 적용될 수 있다.
+
+applicability_text는
+공식 자료의 적용범위를
+사람이 읽을 수 있는 형태로 보존한다.
+
+applicability_text
+≠
+EligibilityRule
+
+EligibilityRule은
+deterministic 자동 판정을 위한 rule이다.
+
+applicability_text는
+공식 자료의 적용범위를 손실 없이 설명하기 위한 text다.
+
+structured applicability model은
+현재 만들지 않는다. 향후 확장이다.
 
 
 ## AdmissionSection granularity
@@ -509,8 +619,15 @@ AdmissionSection의 단점:
 
 # 8. RequiredDocument
 
-제출서류는 일반 long-form section과 구분해
-구조화된 반복 데이터로 저장하는 방향을 검토한다.
+역할:
+
+"무엇을 제출해야 하는가"
+
+라는 logical document requirement를 표현한다.
+
+제출 단계, 제출 방식, 원본/사본, 기한은
+RequiredDocument가 아니라
+DocumentSubmission에 둔다.
 
 필드 초안:
 
@@ -520,40 +637,33 @@ AdmissionSection의 단점:
 - description
 - requirement_status
 - condition
-- submission_phase (nullable)
+- document_subject_text (nullable)
 - display_order
 - verification_status
 - verified_at
+- timestamps
 
-하나의 전형에 여러 제출서류가 존재할 수 있다.
+document_subject_text:
 
-제출서류는
-단순히 "어떤 문서를 내는가"뿐 아니라
-"언제/어느 단계에서 내는가"도 중요하다.
+해당 서류가 누구에 관한 서류인지 /
+누구에게 요구되는지를
+공식 의미를 손실하지 않도록
+사람이 읽을 수 있게 표현한다.
 
-submission_phase는
-같은 전형에서 서류가
-서로 다른 제출 단계에 요구될 수 있음을 표현한다.
+physical submitter나 submission method와
+같은 개념으로 보지 않는다.
 
-실제 submission_phase enum 값은
-이번 단계에서 확정하지 않는다.
+structured subject taxonomy는
+향후 확장 대상으로 남긴다.
 
-제출 기한이 특정 AdmissionSchedule event와
-연결될 필요가 있을 수 있다.
-RequiredDocument → optional AdmissionSchedule relation
-가능성은 schema 단계에서 검토한다.
+기존 conceptual field였던
+submission_phase는 RequiredDocument에서 제거한다.
 
-한 RequiredDocument가
-여러 submission phase 또는 여러 schedule event와
-연결되는 사례가 반복될 경우에는
-별도의 submission entity 또는 join structure가
-필요할 수 있다.
+한 logical document를
+제출 단계 때문에 복제하지 않는다.
 
-이번 DATA_MODEL에서는
-그 새 entity를 필수로 추가하지 않는다.
-
-requirement_status의 실제 enum은
-Supabase schema 단계에서 결정한다.
+requirement_status의 실제 값은
+schema 단계에서 결정한다.
 WIREFRAME에서 검토한 개념 예:
 
 - 필수
@@ -562,11 +672,136 @@ WIREFRAME에서 검토한 개념 예:
 
 실제 제출서류명은 이번 문서에 작성하지 않는다.
 
-확인되지 않은 제출 단계를
-임의로 생성하지 않는다.
+관계:
+
+AdmissionProgram 1 → N RequiredDocument
+RequiredDocument 1 → N DocumentSubmission
 
 
-# 9. AdmissionSchedule
+# 9. DocumentSubmission
+
+역할:
+
+하나의 RequiredDocument가
+어느 단계에서,
+어떤 방식으로,
+어떤 형태로,
+언제 제출되는가
+
+를 표현한다.
+
+RequiredDocument
+= 무엇을 제출해야 하는가
+
+DocumentSubmission
+= 언제 / 어떻게 / 어떤 형태로 제출하는가
+
+관계:
+
+RequiredDocument
+1 → N DocumentSubmission
+
+DocumentSubmission
+N → 0..1 AdmissionSchedule
+
+RequiredDocument가
+AdmissionSchedule을 직접 참조하는 구조는
+현재 recommended conceptual model이 아니다.
+
+향후 한 submission이 여러 일정과
+반복적으로 연결되는 사례가 나타나면
+join relation으로 확장 가능하다.
+
+필드 초안:
+
+- id
+- required_document_id
+- submission_phase
+- submission_method (nullable)
+- submission_format (nullable)
+- admission_schedule_id (nullable)
+- instructions (nullable)
+- display_order
+- verification_status
+- verified_at
+- timestamps
+
+의미:
+
+submission_phase
+= 어느 제출 단계인가
+
+submission_method
+= 온라인 업로드 / 우편 / 방문 등 제출 방식 개념
+
+submission_format
+= 원본 / 사본 / 스캔 등 제출 형태 개념
+
+instructions
+= 구조화하기 어려운 공식 제출 조건/안내
+
+실제 vocabulary는 아직 일반화하지 않는다.
+submission_phase / submission_method / submission_format의
+allowed values는 추가 대학 데이터 입력 과정에서 정한다.
+
+DocumentSubmission도
+자체 SourceCitation과 verified_at을 가질 수 있다.
+
+
+# 10. RequiredDocumentChoiceGroup
+
+역할:
+
+- A 또는 B
+- 여러 대체 서류 중 하나
+- 조건부 alternative
+
+같은 서류 간 관계를
+단순 문자열이 아니라 구조적으로 표현한다.
+
+KU + Yonsei 양쪽에서
+alternative document pattern이 반복되어
+initial core conceptual structure로 승격되었다.
+
+필드 초안:
+
+- id
+- admission_program_id
+- title (nullable)
+- rule_text
+- condition (nullable)
+- display_order
+- verification_status
+- verified_at
+- timestamps
+
+관계:
+
+AdmissionProgram
+1 → N RequiredDocumentChoiceGroup
+
+RequiredDocumentChoiceGroup
+N ↔ N RequiredDocument
+
+ChoiceGroupItem은
+이 N ↔ N을 잇는 join relation이다.
+독립 핵심 entity 번호로 올리지 않는다.
+
+현재는 rule_text로
+공식 규칙 의미를 보존한다.
+
+다음과 같은 structured rule vocabulary는
+아직 만들지 않는다.
+
+- any_of
+- exactly_one
+- at_least_n
+
+alternative document 관계를
+이름/description 문자열만 보고 추론하지 않는다.
+
+
+# 11. AdmissionSchedule
 
 전형 일정은 여러 event가 존재할 수 있으므로
 단일 text field로 저장하지 않는다.
@@ -576,24 +811,48 @@ WIREFRAME에서 검토한 개념 예:
 - id
 - admission_program_id
 - event_name
-- start_at
-- end_at
-- timezone
-- description
+- temporal_precision
+- start_date (nullable)
+- end_date (nullable)
+- start_at (nullable)
+- end_at (nullable)
+- timezone (nullable)
+- location_text (nullable)
+- description (nullable)
 - verification_status
 - verified_at
 - display_order
+- timestamps
 
-날짜가 단일 날짜인지 기간인지 모두 지원 가능한 구조를 고려한다.
+temporal_precision conceptual values:
 
-- 단일 날짜: start_at = end_at, 또는 end_at null
-- 기간: start_at와 end_at를 모두 사용
+- date
+- datetime
+
+date-only와 time-specific 일정을
+같은 의미로 취급하지 않는다.
+
+원칙:
+
+date-only official schedule에
+임의의 00:00 시간을 생성하지 않는다.
+
+date type이면 date fields를 사용한다.
+datetime type이면 timestamp fields를 사용한다.
+
+event venue는
+University campus identity와 분리하여
+location_text로 표현한다.
+
+University.campus_name
+≠
+AdmissionSchedule.location_text
 
 공식 일정이 추후 변경될 가능성을 고려해
 source와 verification을 추적해야 한다.
 
 
-# 10. SourceDocument
+# 12. SourceDocument
 
 역할:
 
@@ -607,11 +866,29 @@ AdmissionProgram
 
 둘은 1:1 관계가 아니다.
 
-하나의 SourceDocument가
-여러 AdmissionProgram의 근거가 될 수 있고,
+AdmissionProgram N ↔ N SourceDocument는
+core provenance relation이다.
 
-하나의 AdmissionProgram 역시
-여러 SourceDocument를 근거로 가질 수 있다.
+semantic meaning:
+
+이 official source가
+어떤 AdmissionProgram에 적용되는가
+
+SourceCitation relation은 별도다.
+
+SourceCitation:
+
+특정 section/document/submission/schedule fact가
+공식 source의 정확히 어디에서 확인되는가
+
+따라서:
+
+Program ↔ SourceDocument
+≠
+Entity ↔ SourceCitation
+
+두 관계는 provenance의
+서로 다른 레이어다.
 
 예:
 
@@ -680,9 +957,33 @@ SourceDocument B
 - 이전 source를 삭제하지 않는다.
 - 수정본이 생겼다고 과거 source record를 덮어쓰지 않는다.
 - 어느 version을 근거로 검증했는지 추적 가능해야 한다.
+- current source를 published_at 최신값만으로 판단하지 않는다.
 
-실제 self-referencing FK 여부와 이름은
+SourceDocument URL은 identity가 아니다.
+
+동일 logical source의 여러 access surface나
+revision 가능성이 존재할 수 있으므로
+source_url을 semantic identity로 사용하지 않는다.
+
+alias entity는 아직 만들지 않는다.
+
+실제 self-referencing relation 구현은
 schema 단계에서 최종 확정한다.
+
+
+## Official-source conflict
+
+공식 source끼리 내용이 충돌할 수 있다.
+
+이 경우:
+
+1. 각 source를 보존한다.
+2. 더 구체적이고 authoritative한 official source를 우선한다.
+3. production interpretation의 근거를 notes/provenance에 남긴다.
+4. 필요 시 needs_review를 사용한다.
+5. 충돌 사실을 삭제하거나 조용히 덮어쓰지 않는다.
+
+현재 별도의 SourceConflict entity는 만들지 않는다.
 
 
 ## SourceDocument current 상태
@@ -722,7 +1023,7 @@ supersedes_source_document_id로
 revision lineage를 추적할 수 있게 하는 것을 권장한다.
 
 
-# 11. SourceCitation
+# 13. SourceCitation
 
 역할:
 
@@ -740,18 +1041,21 @@ SourceDocument 안에서
 - verified_at
 - created_at
 
-기존 단일 page 필드는
-PDF 운영에서 충분하지 않을 수 있다.
-
-새 구조로 대체하거나 deprecated candidate로 둔다.
-
-의미:
+resolved conceptual rule:
 
 file_page_number
-= PDF 파일 자체에서의 실제 페이지 순번
+= PDF physical page number, 1-based
 
 printed_page_label
-= 문서 내부에 인쇄되어 있는 페이지 번호 또는 라벨
+= 문서 내부에 표시된 페이지 번호 또는 label
+
+둘은 별개다.
+
+PDF library/API가 0-based index를 사용하는 것은
+application implementation detail이며
+conceptual citation 값과 혼동하지 않는다.
+
+기존 단일 page 필드는 사용하지 않는다.
 
 PDF에서는
 실제 PDF 파일 페이지 순번과
@@ -767,8 +1071,10 @@ file_page_number, printed_page_label,
 section, anchor_description은 모두 nullable로 두고
 문서 형태에 맞게 채운다.
 
-실제 PostgreSQL field type과 최종 field 이름은
-아직 결정하지 않는다.
+실제 PostgreSQL field type과
+0-based library index 저장 여부는
+conceptual 문제가 아니다.
+citation에는 1-based physical page를 사용한다.
 
 예:
 
@@ -779,31 +1085,45 @@ SourceCitation
 = 해당 PDF의 특정 file page, printed page, 또는 section
 
 
-# 12. Source 연결 구조
+# 14. Source 연결 구조
 
 SourceDocument와 AdmissionProgram은 1:1이 아니다.
 
-2027학년도 공식 자료 검증에서도
-이 N ↔ N 관계가 확인되었다.
+이 N ↔ N 관계는
+core provenance relation이다.
 
 하나의 SourceDocument는
-여러 AdmissionProgram의 근거가 될 수 있다.
+여러 AdmissionProgram에 적용될 수 있다.
 
 하나의 AdmissionProgram은
-여러 SourceDocument를 근거로 가질 수 있다.
+여러 SourceDocument를 사용할 수 있다.
 
-한 AdmissionProgram에
-여러 SourceDocument가 연결될 수 있어야 한다.
+Program ↔ SourceDocument
+= 이 official source가 어느 AdmissionProgram에 적용되는가
 
-또한 다음 각각이
-하나 이상의 SourceCitation과 연결될 수 있어야 한다.
+Entity ↔ SourceCitation
+= 특정 fact의 정확한 근거 위치가 어디인가
 
-- AdmissionProgram
+둘은 동일 개념이 아니다.
+
+core citation targets:
+
 - AdmissionSection
 - RequiredDocument
+- DocumentSubmission
 - AdmissionSchedule
+
+향후 citation 가능:
+
 - EligibilityRule
 - Faq
+
+같은 SourceCitation을
+여러 entity가 재사용할 수 있다.
+
+AdmissionProgram 수준의 source는
+citation join이 아니라
+Program ↔ SourceDocument relation으로 관리한다.
 
 
 ## Polymorphic foreign key vs 명시적 join table
@@ -832,12 +1152,13 @@ entity별로 citation join table을 둔다.
 
 예:
 
-- admission_program_source_citations
-- admission_section_source_citations
-- required_document_source_citations
-- admission_schedule_source_citations
-- eligibility_rule_source_citations
-- faq_source_citations
+- admission_section_citations
+- required_document_citations
+- document_submission_citations
+- admission_schedule_citations
+
+EligibilityRule / Faq citation join은
+해당 entity를 도입할 때 추가한다.
 
 장점:
 
@@ -859,7 +1180,7 @@ entity별로 citation join table을 둔다.
 이번 단계에서 반드시 확정하지 않는다.
 
 
-# 13. Verification Status와 Availability Status
+# 15. Verification Status와 Availability Status
 
 두 개를 혼동하지 않도록 별도의 개념으로 설계한다.
 
@@ -906,7 +1227,7 @@ not_found_in_official_source 또는 unknown이다.
 "요구하지 않는다"고 추론하지 않는다.
 
 
-# 14. Information Type
+# 16. Information Type
 
 다음 정보 유형 개념을 유지한다.
 
@@ -931,7 +1252,7 @@ FAQ는 official_fact 또는
 공식자료 기반 interpretation 중심으로 구성한다.
 
 
-# 15. Verification Date 설계
+# 17. Verification Date 설계
 
 두 수준을 구분해 설계한다.
 
@@ -953,8 +1274,17 @@ FAQ는 official_fact 또는
 
 - AdmissionSection
 - RequiredDocument
+- DocumentSubmission
 - AdmissionSchedule
 - EligibilityRule
+
+DocumentSubmission도
+자체 verified_at을 가질 수 있다.
+
+새 source가 추가되거나
+특정 child만 재확인되었다고 해서
+AdmissionProgram 전체 verified_at을
+자동 갱신하지 않는다.
 
 updated_at은 verified_at과 별개다.
 오타 수정, 내부 분류 변경 등은
@@ -985,14 +1315,14 @@ updated_at만 바뀌고 verified_at은 유지될 수 있다.
 기존 AdmissionProgram 전체가 자동으로
 재검증된 것으로 처리하지 않는다.
 
-영향을 받은 section/document/schedule 등을
+영향을 받은 section/document/submission/schedule 등을
 다시 확인해야 한다.
 
 AdmissionProgram.verified_at은
 그 재검토가 완료된 경우에만 갱신한다.
 
 
-# 16. EligibilityRule
+# 18. EligibilityRule
 
 EligibilityRule은
 사람이 읽는 지원자격 설명과
@@ -1044,7 +1374,7 @@ EligibilityRule은 특정 AdmissionProgram에 속한다.
 모집요강 문서 자체를 자격판정 단위로 사용하지 않는다.
 
 
-# 17. 자격진단 개인정보
+# 19. 자격진단 개인정보
 
 MVP에서는 다음 정보를 기본적으로 database에
 영구 저장하지 않는 방향을 권장한다.
@@ -1070,7 +1400,7 @@ MVP에서는 다음 정보를 기본적으로 database에
 DiagnosisSession을 필수 persistent entity로 포함하지 않는다.
 
 
-# 18. FAQ
+# 20. FAQ
 
 최소 conceptual field:
 
@@ -1097,7 +1427,7 @@ FAQ와 ParentStory는
 확정된 공식정보처럼 표시하지 않는다.
 
 
-# 19. ParentStory
+# 21. ParentStory
 
 최소 conceptual field:
 
@@ -1122,7 +1452,7 @@ ParentStory를 official_fact로 변환하지 않는다.
 공식 admission facts와 별도의 content 영역으로 유지한다.
 
 
-# 20. Publication Status
+# 22. Publication Status
 
 콘텐츠 운영을 위해
 verification_status와 별도로
@@ -1144,23 +1474,27 @@ verified와 published는 다른 개념이다.
 공식 확인 정보처럼 표시해서는 안 된다.
 
 
-# 21. 관계 요약
+# 23. 관계 요약
 
 ```mermaid
 erDiagram
     University ||--o{ AdmissionProgram : has
     AdmissionCategory ||--o{ AdmissionProgram : classifies
     University ||--o{ SourceDocument : may_own
-    SourceDocument }o--o{ AdmissionProgram : grounds
+    SourceDocument }o--o{ AdmissionProgram : applies_to
     AdmissionProgram ||--o{ AdmissionSection : has
     AdmissionProgram ||--o{ RequiredDocument : has
+    RequiredDocument ||--o{ DocumentSubmission : has
+    DocumentSubmission }o--o| AdmissionSchedule : may_use
     AdmissionProgram ||--o{ AdmissionSchedule : has
+    AdmissionProgram ||--o{ RequiredDocumentChoiceGroup : has
+    RequiredDocumentChoiceGroup }o--o{ RequiredDocument : alternatives
     AdmissionProgram ||--o{ EligibilityRule : has
     SourceDocument |o--o| SourceDocument : supersedes
     SourceDocument ||--o{ SourceCitation : contains
-    AdmissionProgram }o--o{ SourceCitation : cites
     AdmissionSection }o--o{ SourceCitation : cites
     RequiredDocument }o--o{ SourceCitation : cites
+    DocumentSubmission }o--o{ SourceCitation : cites
     AdmissionSchedule }o--o{ SourceCitation : cites
     EligibilityRule }o--o{ SourceCitation : cites
     Faq }o--o{ SourceCitation : cites
@@ -1176,18 +1510,25 @@ erDiagram
 - AdmissionCategory 1 → N AdmissionProgram
 - AdmissionProgram 1 → N AdmissionSection
 - AdmissionProgram 1 → N RequiredDocument
+- RequiredDocument 1 → N DocumentSubmission
+- DocumentSubmission N → 0..1 AdmissionSchedule
 - AdmissionProgram 1 → N AdmissionSchedule
+- AdmissionProgram 1 → N RequiredDocumentChoiceGroup
+- RequiredDocumentChoiceGroup N ↔ N RequiredDocument
 - AdmissionProgram 1 → N EligibilityRule
-- SourceDocument N ↔ N AdmissionProgram
+- AdmissionProgram N ↔ N SourceDocument
 - SourceDocument 1 → N SourceCitation
 - SourceDocument는 이전 SourceDocument를 supersede할 수 있다
-- 각 source-traceable entity N ↔ N SourceCitation
-- Faq N ↔ N SourceCitation
+- AdmissionSection N ↔ N SourceCitation
+- RequiredDocument N ↔ N SourceCitation
+- DocumentSubmission N ↔ N SourceCitation
+- AdmissionSchedule N ↔ N SourceCitation
+- EligibilityRule / Faq는 해당 entity 도입 시 citation 가능
 - ParentStory는 공식 admission facts와 별도의 content 영역
 - Campus와 AdmissionTrack은 현재 필수 entity가 아니다
 
 
-# 22. 주요 Data Invariant
+# 24. 주요 Data Invariant
 
 1. academic_year가 다른 AdmissionProgram의 데이터는 자동 혼합하지 않는다.
 
@@ -1226,14 +1567,38 @@ erDiagram
 13. 같은 section_type을 가진 AdmissionSection이
     여러 개 존재할 수 있다.
 
-14. PDF file page와 printed page를
-    동일 개념으로 가정하지 않는다.
+14. PDF physical page는 1-based다.
+    printed page label과 동일 개념으로 가정하지 않는다.
 
-15. submission phase가 확인되지 않은 RequiredDocument에
-    임의의 제출 단계를 생성하지 않는다.
+15. 동일 logical RequiredDocument를
+    submission phase 때문에 복제하지 않는다.
+
+16. submission-specific 정보는
+    DocumentSubmission에 둔다.
+
+17. date-only schedule에
+    임의의 time을 생성하지 않는다.
+
+18. University campus와
+    event location을 혼동하지 않는다.
+
+19. alternative document 관계를
+    이름/description 문자열만 보고 추론하지 않는다.
+
+20. Program↔Source applicability와
+    Entity↔Citation evidence를
+    동일 개념으로 취급하지 않는다.
+
+21. official-source conflict를
+    확인되지 않은 추론으로 조용히 해결하지 않는다.
+
+22. source revision 발생 시
+    이전 history를 보존한다.
+
+23. updated_at과 verified_at은 다른 의미다.
 
 
-# 23. 대학비교 지원
+# 25. 대학비교 지원
 
 대학비교의 기본 대상은 AdmissionProgram이다.
 모집요강 문서 자체를 비교 단위로 사용하지 않는다.
@@ -1243,7 +1608,7 @@ DATA_MODEL은 동일 academic_year의
 
 - eligibility (AdmissionSection.section_type = eligibility)
 - evaluation (AdmissionSection.section_type = evaluation)
-- required documents (RequiredDocument)
+- required documents (RequiredDocument / DocumentSubmission)
 - schedules (AdmissionSchedule)
 - language requirements (AdmissionSection.section_type = language_requirement)
 - standardized tests (AdmissionSection.section_type = standardized_tests)
@@ -1259,7 +1624,7 @@ DATA_MODEL은 동일 academic_year의
 동일 비교 집합에 넣지 않는다.
 
 
-# 24. Source Versioning
+# 26. Source Versioning
 
 입시 자료가 변경 또는 교체될 가능성을 고려한다.
 
@@ -1292,7 +1657,7 @@ schema 설계 전에 표현 방식을 결정해야 한다.
 - SourceCitation.verified_at
 
 
-# 25. 삭제보다 이력 보존
+# 27. 삭제보다 이력 보존
 
 과거 학년도 입시정보는
 새 학년도가 발표됐다고 삭제하지 않는다.
@@ -1312,51 +1677,71 @@ MVP에서 full audit log 구현은
 아직 확정하지 않는다.
 
 
-# 26. 실제 모집요강 검증 결과
+# 28. 실제 모집요강 검증 결과
 
 2027학년도 공식 자료를 이용해
-현재 DATA_MODEL이 실제 대학 전형 구조를
-충분히 표현할 수 있는지 검증했다.
+conceptual model과 schema draft를 검증했다.
 
-자세한 검증 근거는
-`docs/DATA_MODEL_VALIDATION_2027.md`를 참조한다.
+자세한 검증 근거:
+
+- `docs/DATA_MODEL_VALIDATION_2027.md`
+- `docs/DB_SCHEMA_VALIDATION_KU_2027.md`
+- `docs/DB_SCHEMA_VALIDATION_YONSEI_2027.md`
 
 
 ## 검증 범위
 
-- academic_year: 2027
-- 연세대학교 서울캠퍼스
+academic_year: 2027
+
 - 고려대학교 서울캠퍼스
+  재외국민(정원외2%)전형
+
+- 연세대학교 서울캠퍼스
+  재외국민전형[중·고교과정 해외 이수자]
 
 공식 자료만 이용하여 검증했다.
 다른 캠퍼스 또는 다른 학년도 자료는
 규정 근거로 사용하지 않았다.
 
 
-## 결론
+## schema validation에서 반복 확인된 core pattern
 
-B. 소폭 수정 후 사용 가능
+- section applicability
+- document subject
+- choice/alternative documents
+- document multi-phase submission
+- date-only vs datetime schedule
+- Program ↔ Source relation
+
+이 결과로 DATA_MODEL이
+post-validation refinement 되었다.
+
+두 대학만으로
+모든 대학에 일반화된다고 표현하지 않는다.
 
 
 ## 검증으로 보완된 핵심 사항
 
-1. campus 식별
-2. AdmissionSection granularity
-3. RequiredDocument submission phase
-4. SourceCitation page representation
-5. SourceDocument revision lineage
+1. campus identity와 event venue 구분
+2. AdmissionSection granularity 및 applicability_text
+3. RequiredDocument / DocumentSubmission 분리
+4. RequiredDocumentChoiceGroup
+5. AdmissionSchedule date / datetime 분리
+6. SourceCitation 1-based physical page
+7. SourceDocument revision lineage
+8. Program ↔ Source와 Entity ↔ Citation 구분
+9. official-source conflict 보존 원칙
 
-AdmissionTrack은
-이번 검증 범위에서는 필요성이 확인되지 않았으나
+AdmissionTrack, Campus entity,
+evaluation child tables, SourceConflict entity는
+이번 검증 범위에서 core로 도입하지 않았다.
 향후 추가 검증 대상이다.
 
-이 결론을 다른 대학 또는 다른 학년도로 일반화하지 않는다.
 
-
-# 27. MVP에서 우선 구현할 데이터 영역
+# 29. MVP에서 우선 구현할 데이터 영역
 
 데이터 모델 전체를 설계하되
-첫 구현의 우선순위는 database 구축 순서를 의미한다.
+첫 구현의 우선순위는 database schema build sequence다.
 
 이 우선순위가 MVP 기능 중요도 자체를 뜻하지는 않는다.
 
@@ -1368,21 +1753,16 @@ P0:
 - AdmissionSection
 - SourceDocument
 - SourceCitation
-
-P0의 University / SourceDocument / SourceCitation 설계 시
-다음을 schema 설계 전에 반드시 해결해야 한다.
-
-- campus discriminator
-- source revision
-- citation page representation
+- core citation relations
+- Program ↔ Source relation
 
 P1:
 
 - RequiredDocument
+- DocumentSubmission
+- RequiredDocumentChoiceGroup
 - AdmissionSchedule
-
-P1 RequiredDocument 구현 시
-submission phase를 함께 검토해야 한다.
+- 관련 citation relations
 
 P2:
 
@@ -1398,91 +1778,85 @@ P3:
 전형 상세의 핵심 설명과 출처가 먼저 있어야
 탐색, 비교, 이후 자격진단이 같은 데이터를 사용할 수 있다.
 
-제출서류와 일정은 구조화된 반복 데이터이므로
+제출서류, submission event, choice group, 일정은
+구조화된 반복 데이터이므로
 P0 안정화 후 바로 이어서 구축한다.
 
 EligibilityRule은 사람용 설명과 분리해야 하므로
 공식 규정 텍스트가 먼저 검증된 뒤 설계하는 것이 안전하다.
 
 
-# 28. Schema 단계 전 결정사항
+# 30. Deferred 구조
+
+다음은 여전히 future/deferred다.
+현재 core entity처럼 추가하지 않는다.
+
+- Campus entity
+- AdmissionTrack
+- structured applicability model
+- structured document subject lookup
+- evaluation child tables
+- source conflict entity
+- source URL alias model
 
 
-## Schema 전에 반드시 결정
+# 31. Schema / SQL 단계에서 다루는 구현 세부
 
-이번 검증으로 검토 필요성이 확인된 사항이다.
+conceptual model에서 확정하지 않고
+DB_SCHEMA_DRAFT / SQL 단계에서 다루는 것:
 
-1. University campus 표현 방식
-2. RequiredDocument submission phase 구현
-3. SourceDocument revision relationship
-4. SourceCitation PDF page 표현
-5. AdmissionSection multiple same-type 구조
-
-
-## 아직 결정하지 않는 사항
-
-다음은 아직 확정하지 않는다.
-
-- Supabase 최종 채택
-- PostgreSQL 실제 table DDL
-- UUID vs bigint 등 PK 구현 방식
-- RLS 정책
-- database index
-- 실제 enum 구현 방식
-- Prisma/ORM
-- 관리자 UI
-- 실제 대학 목록
-- 초기 대상 학년도
-- 실제 입시 데이터
-- 실제 eligibility rule 값
-- 실제 source URL
-- 실제 FAQ
-- 실제 ParentStory
-- 인증
-- 개인정보 저장 기능
-- DiagnosisSession persistent 저장
-- full audit log
-- source snapshot 저장
-- join table의 최종 이름
-- EligibilityRule JSON schema
-- AdmissionCategory 실제 값
-- requirement_status 최종 enum
-- submission_phase 최종 enum
-- is_current boolean 채택 여부
-- Campus entity 도입 여부
-- AdmissionTrack 도입 여부
+- UUID default function
+- CHECK syntax
+- trigger
+- index
+- exact FK action
+- join table PK 형태
+- submission_phase / method / format vocabulary
+- timestamp/timezone DB types
 
 
-# 29. 다음 단계 권고
+# 32. DB_SCHEMA_DRAFT와의 관계
 
-DATA_MODEL 이후 권고 순서는 다음과 같다.
+DATA_MODEL.md는
+conceptual source of truth다.
 
-1. DATA_MODEL 검증 결과 반영 완료
-2. MVP 초기 데이터 범위 결정
-3. 최초 대상 대학 결정
-4. 최초 대상 academic_year 결정
-5. 최초 admission 범위 결정
-6. PostgreSQL/Supabase schema 설계
-7. schema를 실제 공식 자료 몇 건으로 재확인
-8. migration 생성
-9. 검증된 초기 데이터 입력
-10. UI 연결
+DB_SCHEMA_DRAFT.md는
+그 conceptual model을
+PostgreSQL 구현 관점에서 구체화한 logical schema다.
+
+두 문서는 이제
+핵심 entity와 relation 관점에서
+동일한 방향을 가져야 한다.
+
+구현 세부:
+
+- UUID default function
+- CHECK syntax
+- trigger
+- index
+- exact FK action
+
+은 DB_SCHEMA_DRAFT / SQL 단계에서 다룬다.
+
+
+# 33. 다음 단계 권고
+
+1. DATA_MODEL synchronization 완료
+2. DB_SCHEMA_DRAFT와 conceptual consistency 확인
+3. PostgreSQL DDL 설계
+4. initial migration 작성
+5. Supabase 구축
+6. KU + Yonsei verified sample data 입력
+7. Sogang
+8. Hanyang
+9. SKKU
+10. read layer
+11. 대학전형 UI
 
 중요:
 
-2027학년도 연세대학교 서울캠퍼스와
-고려대학교 서울캠퍼스 공식 자료 검증은 완료되었다.
+이번 작업에서는 SQL, migration, database,
+Supabase, application code를 만들지 않는다.
 
-database schema를 확정하기 전에
-위 Schema 전 필수 결정사항을 먼저 정리해야 한다.
-
-추가 대학 검증에서 확인할 것:
-
-- 하나의 SourceDocument에 몇 개 AdmissionProgram이 필요한가
-- 하나의 AdmissionProgram 내부에 sub-track이 필요한가
-- 여러 program이 공유하는 일정/서류/평가 데이터가 얼마나 많은가
-- program을 분리했을 때 데이터 중복이 과도한가
-- 현재 구조만으로 대학별 실제 전형 체계를 손실 없이 표현할 수 있는가
-
-이 추가 검증 결과에 따라
-AdmissionTrack 등 추가 normalization을 재검토한다.
+두 대학만으로
+모든 대학 전형 구조를 일반화하지 않는다.
