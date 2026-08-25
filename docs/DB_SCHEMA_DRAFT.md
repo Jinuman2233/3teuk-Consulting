@@ -20,11 +20,28 @@ refined logical schema다.
 
 현재 평가:
 
-Logical schema refined after KU + Yonsei validation.
-Ready for final documentation synchronization
-and PostgreSQL DDL design.
+Conceptual model and validated logical schema are synchronized.
+Ready for PostgreSQL DDL design and SQL-level constraint review.
 
-DATA_MODEL 동기화와
+DATA_MODEL.md
+= conceptual source of truth
+
+DB_SCHEMA_DRAFT.md
+= conceptual model을 PostgreSQL 구현 관점에서
+  구체화한 validated logical schema
+
+두 문서는 다음 관점에서 aligned 상태다.
+
+- core entities
+- relationships
+- provenance structure
+- verification semantics
+- document submission abstraction
+- schedule temporal model
+
+PostgreSQL-specific implementation details는
+DB_SCHEMA_DRAFT / SQL 단계에서 결정한다.
+
 SQL-level constraint review가 끝나기 전까지
 migration-ready라고 부르지 않는다.
 
@@ -1679,34 +1696,43 @@ Final schema readiness를 따른다.
 limitation을 유지한다.
 
 
-# 32. DATA_MODEL divergence
+# 32. DATA_MODEL과의 관계
 
-DB_SCHEMA_DRAFT는 KU + Yonsei validation을 통해
-DATA_MODEL.md보다 구체적으로 발전했다.
+DATA_MODEL.md
+= conceptual source of truth
 
-현재 중요한 divergence:
+DB_SCHEMA_DRAFT.md
+= conceptual model을 PostgreSQL 구현 관점에서
+  구체화한 validated logical schema
 
-DATA_MODEL.md:
-RequiredDocument.submission_phase
+KU + Yonsei validation 이후 발견된 conceptual refinement:
 
-Refined schema:
-RequiredDocument와 DocumentSubmission 분리
+- DocumentSubmission
+- RequiredDocumentChoiceGroup
+- AdmissionSection applicability
+- document subject
+- date/datetime schedule
+- event location
+- Program ↔ Source N:N
+- citation / verification invariants
 
-이것은 오류가 아니라
-KU + Yonsei validation 이후 나온 refinement다.
+는 DATA_MODEL.md에 반영되었다.
 
-그 외 주요 시점 차이 예:
+docs/DATA_MODEL.md synchronization completed.
 
-- document_subject_text
-- applicability_text
-- AdmissionSchedule date / datetime 분리
-- admission_program_sources
-- required_document_choice_groups
+현재 두 문서는
+core entities, relationships, provenance structure,
+verification semantics, document submission abstraction,
+schedule temporal model 관점에서 aligned 상태다.
 
-SQL 작성 전에
-DATA_MODEL.md도 이 구조에 맞춰 동기화해야 한다.
+PostgreSQL-specific implementation details는
+DB_SCHEMA_DRAFT / SQL 단계에서 결정한다.
 
-이번 작업에서는 DATA_MODEL.md를 수정하지 않는다.
+- UUID default function
+- CHECK syntax
+- trigger
+- index
+- exact FK action
 
 
 # 33. Schema Validation Checklist
@@ -1739,17 +1765,20 @@ refined schema가 두 validation 결과를
 
 # 34. 다음 단계
 
-1. DATA_MODEL.md를 refined schema에 맞춰 동기화
-2. PostgreSQL DDL 설계
-3. SQL-level constraint / ON DELETE / CHECK review
-4. initial migration 작성
-5. Supabase project/database 구축
-6. KU + Yonsei verified sample data 입력
-7. Sogang 추가 검증/입력
-8. Hanyang
-9. SKKU
-10. application read layer
-11. 대학전형 UI
+1. Conceptual model synchronization — completed
+2. Logical schema refinement — completed
+3. PostgreSQL DDL design
+4. SQL constraint review
+5. Initial migration
+6. Migration validation
+7. Supabase project/database setup
+8. Migration apply
+9. KU + Yonsei verified sample data
+10. Sogang data validation/input
+11. Hanyang
+12. SKKU
+13. application read layer
+14. university admissions UI
 
 이번 작업에서는 SQL, migration, database,
 Supabase, application code를 만들지 않는다.
@@ -1757,10 +1786,19 @@ Supabase, application code를 만들지 않는다.
 
 # 35. Final schema readiness
 
-Logical schema refined after KU + Yonsei validation.
-Ready for final documentation synchronization
-and PostgreSQL DDL design.
+Conceptual model and validated logical schema are synchronized.
+Ready for PostgreSQL DDL design and SQL-level constraint review.
 
-DATA_MODEL 동기화와
-SQL-level constraint review가 끝나기 전까지
-migration-ready라고 표현하지 않는다.
+아직 migration-ready라고 표현하지 않는다.
+
+남은 SQL-level 세부 결정:
+
+- pure join table PK 전략
+- exact FK ON DELETE
+- exact CHECK syntax
+- exact timestamptz/date types
+- updated_at trigger SQL
+- SourceDocument self-reference syntax
+- exact indexes
+- submission vocabulary
+- source_role representation
