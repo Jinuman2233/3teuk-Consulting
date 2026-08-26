@@ -81,10 +81,6 @@ DECLARE
   cite_y uuid;
   section_a uuid;
   src_checked_at timestamptz := TIMESTAMPTZ '2099-01-01 12:00:00+00';
-  uni_updated_before timestamptz;
-  uni_updated_after timestamptz;
-  src_updated_before timestamptz;
-  src_updated_after timestamptz;
   src_checked_after timestamptz;
   remaining_join integer;
   remaining_cite integer;
@@ -860,26 +856,25 @@ BEGIN
     'unverified'
   );
 
-  -- 20. updated_at trigger
-  SELECT updated_at INTO uni_updated_before
-  FROM public.universities
-  WHERE id = uni_a;
-
-  PERFORM pg_sleep(1);
-
+  -- 20/21 in-transaction: trigger overwrites updated_at; verified_at is
+  -- not auto-filled; last_checked_at is preserved. Wall-clock increase of
+  -- updated_at is checked after ROLLBACK because pg_catalog.now() is
+  -- stable for the life of one transaction.
   UPDATE public.universities
-  SET display_name = 'Test University A Updated'
+  SET
+    display_name = 'Test University A Updated',
+    updated_at = TIMESTAMPTZ '2000-01-01 00:00:00+00'
   WHERE id = uni_a;
 
-  SELECT updated_at INTO uni_updated_after
-  FROM public.universities
-  WHERE id = uni_a;
-
-  IF uni_updated_after <= uni_updated_before THEN
-    RAISE EXCEPTION 'universities.updated_at did not increase after update';
+  IF EXISTS (
+    SELECT 1
+    FROM public.universities
+    WHERE id = uni_a
+      AND updated_at = TIMESTAMPTZ '2000-01-01 00:00:00+00'
+  ) THEN
+    RAISE EXCEPTION 'universities.updated_at was not overwritten by set_updated_at';
   END IF;
 
-  -- universities have no verified_at; programs must stay null unless set
   IF EXISTS (
     SELECT 1
     FROM public.admission_programs
@@ -902,25 +897,14 @@ BEGIN
     RAISE EXCEPTION 'admission_programs.verified_at changed on ordinary update';
   END IF;
 
-  -- 21. last_checked_at preservation
-  SELECT updated_at INTO src_updated_before
-  FROM public.source_documents
-  WHERE id = src_x;
-
-  PERFORM pg_sleep(1);
-
   UPDATE public.source_documents
   SET notes = 'synthetic note'
   WHERE id = src_x;
 
-  SELECT updated_at, last_checked_at
-  INTO src_updated_after, src_checked_after
+  SELECT last_checked_at
+  INTO src_checked_after
   FROM public.source_documents
   WHERE id = src_x;
-
-  IF src_updated_after <= src_updated_before THEN
-    RAISE EXCEPTION 'source_documents.updated_at did not increase after update';
-  END IF;
 
   IF src_checked_after IS DISTINCT FROM src_checked_at THEN
     RAISE EXCEPTION 'source_documents.last_checked_at changed on ordinary update';
@@ -951,3 +935,99 @@ END;
 $$;
 
 ROLLBACK;
+
+-- ---------------------------------------------------------------------------
+-- updated_at wall-clock increase (separate implicit transactions)
+-- pg_catalog.now() is transaction-stable, so this cannot live inside the
+-- BEGIN/ROLLBACK block above.
+-- ---------------------------------------------------------------------------
+
+CREATE TEMP TABLE validation_trigger_probe (
+  uni_id uuid,
+  uni_updated_before timestamptz,
+  src_id uuid,
+  src_updated_before timestamptz,
+  src_checked_at timestamptz
+);
+
+WITH ins AS (
+  INSERT INTO public.universities (name_ko, display_name, slug)
+  VALUES ('Trigger Probe University', 'Trigger Probe University', 'trigger-probe-university')
+  RETURNING id, updated_at
+)
+INSERT INTO validation_trigger_probe (uni_id, uni_updated_before)
+SELECT id, updated_at FROM ins;
+
+WITH ins AS (
+  INSERT INTO public.source_documents (
+    source_type,
+    title,
+    issuing_organization,
+    source_url,
+    last_checked_at
+  ) VALUES (
+    'synthetic',
+    'Trigger Probe Source',
+    'Synthetic Org',
+    'https://example.test/trigger-probe',
+    TIMESTAMPTZ '2099-01-01 12:00:00+00'
+  )
+  RETURNING id, updated_at, last_checked_at
+)
+UPDATE validation_trigger_probe
+SET
+  src_id = ins.id,
+  src_updated_before = ins.updated_at,
+  src_checked_at = ins.last_checked_at
+FROM ins;
+
+SELECT pg_sleep(1);
+
+UPDATE public.universities AS u
+SET display_name = 'Trigger Probe University Updated'
+FROM validation_trigger_probe AS p
+WHERE u.id = p.uni_id;
+
+UPDATE public.source_documents AS s
+SET notes = 'trigger probe note'
+FROM validation_trigger_probe AS p
+WHERE s.id = p.src_id;
+
+DO $$
+DECLARE
+  uni_before timestamptz;
+  uni_after timestamptz;
+  src_before timestamptz;
+  src_after timestamptz;
+  src_checked_before timestamptz;
+  src_checked_after timestamptz;
+BEGIN
+  SELECT p.uni_updated_before, u.updated_at, p.src_updated_before, s.updated_at,
+         p.src_checked_at, s.last_checked_at
+  INTO uni_before, uni_after, src_before, src_after,
+       src_checked_before, src_checked_after
+  FROM validation_trigger_probe p
+  JOIN public.universities u ON u.id = p.uni_id
+  JOIN public.source_documents s ON s.id = p.src_id;
+
+  IF uni_after <= uni_before THEN
+    RAISE EXCEPTION 'universities.updated_at did not increase after update';
+  END IF;
+
+  IF src_after <= src_before THEN
+    RAISE EXCEPTION 'source_documents.updated_at did not increase after update';
+  END IF;
+
+  IF src_checked_after IS DISTINCT FROM src_checked_before THEN
+    RAISE EXCEPTION 'source_documents.last_checked_at changed on ordinary update';
+  END IF;
+
+  RAISE NOTICE 'PASS: updated_at increased across transactions; last_checked_at preserved';
+END;
+$$;
+
+DELETE FROM public.source_documents
+WHERE id IN (SELECT src_id FROM validation_trigger_probe);
+
+DELETE FROM public.universities
+WHERE id IN (SELECT uni_id FROM validation_trigger_probe);
