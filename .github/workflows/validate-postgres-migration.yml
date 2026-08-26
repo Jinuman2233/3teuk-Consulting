@@ -1,0 +1,71 @@
+name: validate-postgres-migration
+
+on:
+  push:
+    branches:
+      - test/postgres-migration-runtime-ci
+  workflow_dispatch:
+
+jobs:
+  validate-migration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+          psql --version
+
+      - name: Print PostgreSQL version
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT version();"
+          psql -v ON_ERROR_STOP=1 -c "SELECT current_setting('server_version') AS server_version, current_setting('server_version_num') AS server_version_num;"
+          psql -v ON_ERROR_STOP=1 -c "DO \$\$
+          DECLARE
+            v integer;
+          BEGIN
+            v := current_setting('server_version_num')::integer;
+            IF v < 150000 THEN
+              RAISE EXCEPTION 'PostgreSQL 15+ required, got %', current_setting('server_version');
+            END IF;
+            RAISE NOTICE 'PostgreSQL version OK: %', current_setting('server_version');
+          END;
+          \$\$;"
+
+      - name: Apply initial schema migration
+        run: |
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260825155343_initial_schema.sql
+
+      - name: Run runtime constraint tests
+        run: |
+          psql -v ON_ERROR_STOP=1 -f tests/db/initial_schema_runtime_test.sql
+
+      - name: Repeat migration on a fresh database
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE validation_repeat;"
+          psql -v ON_ERROR_STOP=1 -d validation_repeat -f supabase/migrations/20260825155343_initial_schema.sql
