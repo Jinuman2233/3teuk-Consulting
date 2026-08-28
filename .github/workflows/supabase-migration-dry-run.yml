@@ -1,0 +1,174 @@
+name: Supabase Migration Dry Run
+
+on:
+  push:
+    branches:
+      - ci/supabase-migration-dry-run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migration-dry-run:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      EXPECTED_PROJECT_REF: styubtgvdjceulfurskb
+      INITIAL_MIGRATION_VERSION: "20260825155343"
+      INITIAL_MIGRATION_FILE: supabase/migrations/20260825155343_initial_schema.sql
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v3
+        with:
+          version: 2.113.0
+
+      - name: Print Supabase CLI version
+        run: supabase --version
+
+      - name: Confirm initial migration file exists
+        run: |
+          set -euo pipefail
+          if [ ! -f "$INITIAL_MIGRATION_FILE" ]; then
+            echo "Missing migration file: $INITIAL_MIGRATION_FILE"
+            exit 1
+          fi
+          echo "Migration file present: $INITIAL_MIGRATION_FILE"
+
+      - name: Ephemeral supabase init
+        run: |
+          set -euo pipefail
+          supabase init
+          if [ ! -f "$INITIAL_MIGRATION_FILE" ]; then
+            echo "Migration file missing after supabase init"
+            exit 1
+          fi
+          echo "supabase init finished; migration file still present"
+
+      - name: Verify project reference
+        run: |
+          set -euo pipefail
+          if [ "${SUPABASE_PROJECT_ID:-}" != "$EXPECTED_PROJECT_REF" ]; then
+            echo "Project reference mismatch"
+            exit 1
+          fi
+          echo "Project reference verified."
+
+      - name: Link hosted Supabase project
+        run: |
+          set -euo pipefail
+          supabase link --project-ref "$SUPABASE_PROJECT_ID"
+          echo "supabase link finished"
+
+      - name: Migration list BEFORE dry-run
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/supabase-dry-run"
+          supabase migration list --linked | tee "$RUNNER_TEMP/supabase-dry-run/migration-list-before.txt"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          version = os.environ["INITIAL_MIGRATION_VERSION"]
+          text = Path(os.environ["RUNNER_TEMP"], "supabase-dry-run", "migration-list-before.txt").read_text()
+          print("----- migration list BEFORE (captured) -----")
+          remote_applied = False
+          local_present = False
+          for raw in text.splitlines():
+              if "│" not in raw or "LOCAL" in raw or set(raw.strip()) <= set("─│┼-|+"):
+                  continue
+              cols = [c.strip() for c in raw.split("│")]
+              local_col = cols[0] if len(cols) > 0 else ""
+              remote_col = cols[1] if len(cols) > 1 else ""
+              if local_col == version:
+                  local_present = True
+              if remote_col == version:
+                  remote_applied = True
+          print(f"initial migration local present: {local_present}")
+          print(f"initial migration remote applied BEFORE: {remote_applied}")
+          if remote_applied:
+              print("WARNING: initial migration already appears in remote history")
+          Path(os.environ["RUNNER_TEMP"], "supabase-dry-run", "before-remote-applied").write_text(
+              "true" if remote_applied else "false"
+          )
+          PY
+
+      - name: Dry-run pending migrations
+        run: |
+          set -euo pipefail
+          supabase db push --dry-run --linked | tee "$RUNNER_TEMP/supabase-dry-run/db-push-dry-run.txt"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import sys
+
+          version = os.environ["INITIAL_MIGRATION_VERSION"]
+          dry_run = Path(os.environ["RUNNER_TEMP"], "supabase-dry-run", "db-push-dry-run.txt").read_text()
+          before_applied = Path(
+              os.environ["RUNNER_TEMP"], "supabase-dry-run", "before-remote-applied"
+          ).read_text().strip() == "true"
+          mentioned = version in dry_run
+          print(f"dry-run output mentions {version}: {mentioned}")
+          if mentioned:
+              print("Initial migration recognized as a dry-run target")
+              sys.exit(0)
+          if before_applied:
+              print("Initial migration not in dry-run output because it is already remote applied")
+              sys.exit(0)
+          print("Initial migration version missing from dry-run output and not remote applied")
+          sys.exit(1)
+          PY
+
+      - name: Migration list AFTER dry-run
+        run: |
+          set -euo pipefail
+          supabase migration list --linked | tee "$RUNNER_TEMP/supabase-dry-run/migration-list-after.txt"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import sys
+
+          version = os.environ["INITIAL_MIGRATION_VERSION"]
+          before_path = Path(os.environ["RUNNER_TEMP"], "supabase-dry-run", "migration-list-before.txt")
+          after_path = Path(os.environ["RUNNER_TEMP"], "supabase-dry-run", "migration-list-after.txt")
+          before = before_path.read_text()
+          after = after_path.read_text()
+
+          def remote_applied(text: str) -> bool:
+              for raw in text.splitlines():
+                  if "│" not in raw or "LOCAL" in raw or set(raw.strip()) <= set("─│┼-|+"):
+                      continue
+                  cols = [c.strip() for c in raw.split("│")]
+                  remote_col = cols[1] if len(cols) > 1 else ""
+                  if remote_col == version:
+                      return True
+              return False
+
+          before_applied = remote_applied(before)
+          after_applied = remote_applied(after)
+          print(f"initial migration remote applied AFTER: {after_applied}")
+          if after_applied and not before_applied:
+              print("FAIL: dry-run changed remote migration history")
+              sys.exit(1)
+          if before != after:
+              print("FAIL: migration list output changed after dry-run")
+              print("----- BEFORE -----")
+              print(before)
+              print("----- AFTER -----")
+              print(after)
+              sys.exit(1)
+          print("Remote migration history unchanged after dry-run")
+          PY
+
+      - name: Runner working tree observation
+        if: always()
+        run: |
+          echo "CI runner ephemeral git status (not a repository commit):"
+          git status --short
