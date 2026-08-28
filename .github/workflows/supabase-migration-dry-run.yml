@@ -61,15 +61,37 @@ jobs:
           fi
           echo "Project reference verified."
 
+      - name: Confirm database password env is set
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
+            echo "SUPABASE_DB_PASSWORD is not set"
+            exit 1
+          fi
+          echo "SUPABASE_DB_PASSWORD is set"
+
       - name: Link hosted Supabase project
         run: |
           set -euo pipefail
+          # Trim CR/LF/surrounding whitespace without printing the value.
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          if [ -z "$pw" ]; then
+            echo "SUPABASE_DB_PASSWORD is empty after trimming"
+            exit 1
+          fi
+          export SUPABASE_DB_PASSWORD="$pw"
           supabase link --project-ref "$SUPABASE_PROJECT_ID"
           echo "supabase link finished"
 
       - name: Migration list BEFORE dry-run
         run: |
           set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          export SUPABASE_DB_PASSWORD="$pw"
           mkdir -p "$RUNNER_TEMP/supabase-dry-run"
           supabase migration list --linked | tee "$RUNNER_TEMP/supabase-dry-run/migration-list-before.txt"
           python3 - <<'PY'
@@ -103,6 +125,10 @@ jobs:
       - name: Dry-run pending migrations
         run: |
           set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          export SUPABASE_DB_PASSWORD="$pw"
           supabase db push --dry-run --linked | tee "$RUNNER_TEMP/supabase-dry-run/db-push-dry-run.txt"
           python3 - <<'PY'
           from pathlib import Path
@@ -129,6 +155,10 @@ jobs:
       - name: Migration list AFTER dry-run
         run: |
           set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          export SUPABASE_DB_PASSWORD="$pw"
           supabase migration list --linked | tee "$RUNNER_TEMP/supabase-dry-run/migration-list-after.txt"
           python3 - <<'PY'
           from pathlib import Path
