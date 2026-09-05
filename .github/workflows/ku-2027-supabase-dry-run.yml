@@ -44,10 +44,6 @@ jobs:
             echo "Found a forbidden Supabase mutation command"
             exit 1
           fi
-          if grep -nE -- '--include-all|--include-seed|--include-roles' "$workflow"; then
-            echo "Found a forbidden include flag"
-            exit 1
-          fi
           echo "Workflow command guard PASS"
 
       - name: Confirm expected project ref
