@@ -539,10 +539,13 @@ jobs:
               RAISE EXCEPTION 'source_citations missing verified_at: %', v_n;
             END IF;
 
-            -- DOC01-40 each have 2 submissions; DOC41/42 have 1 each (SUB83/84)
+            -- DOC01-40 except DOC04: online (SCH02) + original follow-up (SCH11)
+            -- DOC04: SUB04 + SUB44 + SUB81 + SUB82 (ROW_MAP extra-submission pair)
+            -- DOC41/42: SUB83/SUB84 only
             SELECT count(*) INTO v_n
             FROM public.required_documents d
             WHERE d.id NOT IN (
+              'd1acd111-a3ba-4c11-ad62-7fb380b5551a'::uuid,
               '47110092-f5be-419c-baa5-39e6154b1ba8'::uuid,
               'cf5b159c-6931-4adf-bfd6-a4614f3d7c62'::uuid
             )
@@ -552,7 +555,40 @@ jobs:
                 WHERE s.required_document_id = d.id
               ) <> 2;
             IF v_n <> 0 THEN
-              RAISE EXCEPTION 'DOC01-40 documents without exactly 2 submissions: %', v_n;
+              RAISE EXCEPTION 'DOC01-40 except DOC04 without exactly 2 submissions: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.required_documents d
+            WHERE d.id NOT IN (
+              'd1acd111-a3ba-4c11-ad62-7fb380b5551a'::uuid,
+              '47110092-f5be-419c-baa5-39e6154b1ba8'::uuid,
+              'cf5b159c-6931-4adf-bfd6-a4614f3d7c62'::uuid
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM public.document_submissions s
+                WHERE s.required_document_id = d.id
+                  AND s.admission_schedule_id = '5fd7701e-196e-48ea-80e6-b2e5ed20b8e7'::uuid
+                  AND s.submission_method = '온라인 업로드'
+              );
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'DOC01-40 except DOC04 missing online/SCH02 submission: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.required_documents d
+            WHERE d.id NOT IN (
+              'd1acd111-a3ba-4c11-ad62-7fb380b5551a'::uuid,
+              '47110092-f5be-419c-baa5-39e6154b1ba8'::uuid,
+              'cf5b159c-6931-4adf-bfd6-a4614f3d7c62'::uuid
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM public.document_submissions s
+                WHERE s.required_document_id = d.id
+                  AND s.admission_schedule_id = '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid
+              );
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'DOC01-40 except DOC04 missing original/SCH11 submission: %', v_n;
             END IF;
             SELECT count(*) INTO v_n
             FROM public.required_documents d
@@ -562,6 +598,25 @@ jobs:
             );
             IF v_n <> 40 THEN
               RAISE EXCEPTION 'DOC01-40 count=%', v_n;
+            END IF;
+
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions
+            WHERE required_document_id = 'd1acd111-a3ba-4c11-ad62-7fb380b5551a'::uuid;
+            IF v_n <> 4 THEN
+              RAISE EXCEPTION 'DOC04 submission count=% expected 4', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions
+            WHERE required_document_id = 'd1acd111-a3ba-4c11-ad62-7fb380b5551a'::uuid
+              AND id IN (
+                '4628c624-5610-4408-a79b-89fbb5d38b4c'::uuid,
+                '651f7934-a3ed-43ee-b900-a125caf7e009'::uuid,
+                'bbfadff6-d352-4a2d-8d23-86feadd1248f'::uuid,
+                '46bd94bf-42dd-4d85-85c5-ec828061f6df'::uuid
+              );
+            IF v_n <> 4 THEN
+              RAISE EXCEPTION 'DOC04 UUID set is not SUB04/SUB44/SUB81/SUB82';
             END IF;
 
             SELECT count(*) INTO v_n
