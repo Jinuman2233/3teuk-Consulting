@@ -772,12 +772,17 @@ jobs:
             echo "admission_schedule_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_schedule_citations;')"
           } | tee /tmp/ku2027_counts_a.txt
           {
-            echo "uuids_universities=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.universities;')"
-            echo "uuids_programs=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_programs;')"
-            echo "uuids_sources=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_documents;')"
-            echo "uuids_schedules=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_schedules;')"
-            echo "uuids_citations=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_citations;')"
+            echo "uuids_universities=$(psql -d ku2027_clean -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.universities;')"
+            echo "uuids_programs=$(psql -d ku2027_clean -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.admission_programs;')"
+            echo "uuids_sources=$(psql -d ku2027_clean -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.source_documents;')"
+            echo "uuids_schedules=$(psql -d ku2027_clean -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.admission_schedules;')"
+            echo "uuids_citations=$(psql -d ku2027_clean -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.source_citations;')"
           } | tee /tmp/ku2027_uuids_a.txt
+          if grep -Eq '^uuids_[^=]+=$' /tmp/ku2027_uuids_a.txt; then
+            echo "Database A UUID snapshot is empty"
+            cat /tmp/ku2027_uuids_a.txt
+            exit 1
+          fi
 
       - name: Database A — second-run preflight must fail
         run: |
@@ -851,12 +856,17 @@ jobs:
             exit 1
           fi
           {
-            echo "uuids_universities=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.universities;')"
-            echo "uuids_programs=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_programs;')"
-            echo "uuids_sources=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_documents;')"
-            echo "uuids_schedules=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_schedules;')"
-            echo "uuids_citations=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_citations;')"
+            echo "uuids_universities=$(psql -d ku2027_repeat -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.universities;')"
+            echo "uuids_programs=$(psql -d ku2027_repeat -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.admission_programs;')"
+            echo "uuids_sources=$(psql -d ku2027_repeat -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.source_documents;')"
+            echo "uuids_schedules=$(psql -d ku2027_repeat -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.admission_schedules;')"
+            echo "uuids_citations=$(psql -d ku2027_repeat -v ON_ERROR_STOP=1 -Atc 'SELECT string_agg(id::text, chr(44) ORDER BY id::text) FROM public.source_citations;')"
           } > /tmp/ku2027_uuids_b.txt
+          if grep -Eq '^uuids_[^=]+=$' /tmp/ku2027_uuids_b.txt; then
+            echo "Database B UUID snapshot is empty"
+            cat /tmp/ku2027_uuids_b.txt
+            exit 1
+          fi
           if ! cmp -s /tmp/ku2027_uuids_a.txt /tmp/ku2027_uuids_b.txt; then
             echo "Database B UUID sets differ from Database A"
             echo "A:"; cat /tmp/ku2027_uuids_a.txt
