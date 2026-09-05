@@ -2,6 +2,12 @@ name: KU 2027 Data Migration Runtime Validation
 
 on:
   workflow_dispatch:
+  # GitHub only lists workflow_dispatch from the default branch.
+  # This temporary test branch is not merged to main, so a
+  # branch-scoped push trigger is required to actually run here.
+  push:
+    branches:
+      - test/ku-2027-data-migration-runtime-ci
 
 permissions:
   contents: read
