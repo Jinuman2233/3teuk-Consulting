@@ -1,0 +1,832 @@
+name: KU 2027 Data Migration Runtime Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-runtime-validation:
+    name: PostgreSQL 17 KU 2027 runtime validation
+    runs-on: ubuntu-24.04
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      SCHEMA_FILE: supabase/migrations/20260825155343_initial_schema.sql
+      KU_FILE: supabase/migrations/20260905160000_load_ku_2027_reentry.sql
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install PostgreSQL client
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Confirm migration files are the production pair
+        run: |
+          set -euo pipefail
+          test -f "$SCHEMA_FILE"
+          test -f "$KU_FILE"
+          mapfile -t migration_files < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort)
+          if [ "${#migration_files[@]}" -ne 2 ]; then
+            echo "Expected exactly two SQL migrations, found ${#migration_files[@]}"
+            printf '%s\n' "${migration_files[@]}"
+            exit 1
+          fi
+          echo "Using:"
+          printf '%s\n' "${migration_files[@]}"
+
+      - name: Confirm PostgreSQL 17 client and server
+        run: |
+          set -euo pipefail
+          echo "=== psql --version ==="
+          psql --version
+          echo "=== select version() ==="
+          psql -d postgres -v ON_ERROR_STOP=1 -c "SELECT version();"
+          major="$(psql -d postgres -v ON_ERROR_STOP=1 -Atc "SHOW server_version_num;")"
+          echo "server_version_num=${major}"
+          if [ "${major:0:2}" != "17" ]; then
+            echo "PostgreSQL server major version is not 17"
+            exit 1
+          fi
+
+      - name: Create disposable databases
+        run: |
+          set -euo pipefail
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ku2027_clean;"
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ku2027_repeat;"
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ku2027_rollback_probe;"
+
+      - name: Database A — clean initial schema apply
+        run: |
+          set -euo pipefail
+          psql -d ku2027_clean -v ON_ERROR_STOP=1 -f "$SCHEMA_FILE"
+          echo "A: initial schema apply PASS"
+
+      - name: Database A — clean KU migration apply
+        run: |
+          set -euo pipefail
+          psql -d ku2027_clean -v ON_ERROR_STOP=1 -f "$KU_FILE"
+          echo "A: KU migration apply PASS (embedded preflight, inserts, assertions executed)"
+
+      - name: Database A — dataset and fact validation
+        run: |
+          set -euo pipefail
+          psql -d ku2027_clean -v ON_ERROR_STOP=1 <<'SQL'
+          DO $validate$
+          DECLARE
+            v_universities integer;
+            v_categories integer;
+            v_sources integer;
+            v_programs integer;
+            v_program_sources integer;
+            v_sections integer;
+            v_schedules integer;
+            v_documents integer;
+            v_submissions integer;
+            v_choice_groups integer;
+            v_choice_items integer;
+            v_citations integer;
+            v_section_cites integer;
+            v_document_cites integer;
+            v_submission_cites integer;
+            v_schedule_cites integer;
+            v_relations integer;
+            v_n integer;
+            v_text text;
+            v_year integer;
+            v_ts timestamptz;
+            v_uuid uuid;
+            v_bool boolean;
+          BEGIN
+            SELECT count(*) INTO v_universities FROM public.universities;
+            SELECT count(*) INTO v_categories FROM public.admission_categories;
+            SELECT count(*) INTO v_sources FROM public.source_documents;
+            SELECT count(*) INTO v_programs FROM public.admission_programs;
+            SELECT count(*) INTO v_program_sources FROM public.admission_program_sources;
+            SELECT count(*) INTO v_sections FROM public.admission_sections;
+            SELECT count(*) INTO v_schedules FROM public.admission_schedules;
+            SELECT count(*) INTO v_documents FROM public.required_documents;
+            SELECT count(*) INTO v_submissions FROM public.document_submissions;
+            SELECT count(*) INTO v_choice_groups FROM public.required_document_choice_groups;
+            SELECT count(*) INTO v_choice_items FROM public.required_document_choice_group_items;
+            SELECT count(*) INTO v_citations FROM public.source_citations;
+            SELECT count(*) INTO v_section_cites FROM public.admission_section_citations;
+            SELECT count(*) INTO v_document_cites FROM public.required_document_citations;
+            SELECT count(*) INTO v_submission_cites FROM public.document_submission_citations;
+            SELECT count(*) INTO v_schedule_cites FROM public.admission_schedule_citations;
+            v_relations := v_section_cites + v_document_cites + v_submission_cites + v_schedule_cites;
+
+            IF v_universities <> 1
+               OR v_categories <> 1
+               OR v_sources <> 7
+               OR v_programs <> 1
+               OR v_program_sources <> 6
+               OR v_sections <> 17
+               OR v_schedules <> 15
+               OR v_documents <> 42
+               OR v_submissions <> 84
+               OR v_choice_groups <> 1
+               OR v_choice_items <> 2
+               OR v_citations <> 33
+               OR v_section_cites <> 24
+               OR v_document_cites <> 56
+               OR v_submission_cites <> 90
+               OR v_schedule_cites <> 30
+               OR v_relations <> 200 THEN
+              RAISE EXCEPTION
+                'count mismatch universities=% categories=% sources=% programs=% program_sources=% sections=% schedules=% documents=% submissions=% choice_groups=% choice_items=% citations=% section_cites=% document_cites=% submission_cites=% schedule_cites=% relations=%',
+                v_universities, v_categories, v_sources, v_programs, v_program_sources,
+                v_sections, v_schedules, v_documents, v_submissions, v_choice_groups,
+                v_choice_items, v_citations, v_section_cites, v_document_cites,
+                v_submission_cites, v_schedule_cites, v_relations;
+            END IF;
+
+            -- Program
+            SELECT count(*) INTO v_n
+            FROM public.admission_programs p
+            JOIN public.universities u ON u.id = p.university_id
+            WHERE p.id = 'd35bda6d-9fed-48f1-8687-28c5d07be455'::uuid
+              AND p.official_program_name = '재외국민(정원외2%)전형'
+              AND p.academic_year = 2027
+              AND p.admission_slug = 'overseas-korean-2pct'
+              AND p.information_type = 'official_fact'
+              AND p.verification_status = 'partially_verified'
+              AND p.verified_at IS NULL
+              AND u.id = '86d02517-736f-4e4b-a80f-b95e518c3433'::uuid
+              AND u.display_name = '고려대학교 서울캠퍼스'
+              AND u.name_ko = '고려대학교'
+              AND u.campus_name = '서울캠퍼스';
+            IF v_n <> 1 THEN
+              RAISE EXCEPTION 'P01 / university identity validation failed';
+            END IF;
+
+            -- Source revision
+            SELECT published_at IS NULL
+              INTO v_bool
+            FROM public.source_documents
+            WHERE id = '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid;
+            IF v_bool IS NOT TRUE THEN
+              RAISE EXCEPTION 'SRC01 published_at is not NULL';
+            END IF;
+
+            SELECT supersedes_source_document_id
+              INTO v_uuid
+            FROM public.source_documents
+            WHERE id = '316d1a61-6119-4d15-ac69-5395279ff99a'::uuid;
+            IF v_uuid IS DISTINCT FROM '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid THEN
+              RAISE EXCEPTION 'SRC02 does not supersede SRC01';
+            END IF;
+
+            SELECT count(*) INTO v_n
+            FROM public.admission_program_sources
+            WHERE source_document_id = '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'SRC01 is linked as a program source';
+            END IF;
+
+            SELECT
+              (
+                SELECT count(*)
+                FROM public.admission_section_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE c.source_document_id = '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid
+              )
+              + (
+                SELECT count(*)
+                FROM public.required_document_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE c.source_document_id = '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid
+              )
+              + (
+                SELECT count(*)
+                FROM public.document_submission_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE c.source_document_id = '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid
+              )
+              + (
+                SELECT count(*)
+                FROM public.admission_schedule_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE c.source_document_id = '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid
+              )
+            INTO v_n;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'SRC01 has % current citation relations', v_n;
+            END IF;
+
+            -- last_checked_at instants
+            IF (
+              SELECT last_checked_at
+              FROM public.source_documents
+              WHERE id = '91ce33c3-e327-4681-a267-04c1ba32c172'::uuid
+            ) IS DISTINCT FROM TIMESTAMPTZ '2026-09-05T17:01:54Z' THEN
+              RAISE EXCEPTION 'SRC01 last_checked_at instant mismatch';
+            END IF;
+            IF (
+              SELECT last_checked_at
+              FROM public.source_documents
+              WHERE id = '316d1a61-6119-4d15-ac69-5395279ff99a'::uuid
+            ) IS DISTINCT FROM TIMESTAMPTZ '2026-09-05T17:02:00Z' THEN
+              RAISE EXCEPTION 'SRC02 last_checked_at instant mismatch';
+            END IF;
+            IF (
+              SELECT last_checked_at
+              FROM public.source_documents
+              WHERE id = '5e5f6845-dca3-4d4a-8616-7c65bec86c7d'::uuid
+            ) IS DISTINCT FROM TIMESTAMPTZ '2026-09-05T17:02:01Z' THEN
+              RAISE EXCEPTION 'SRC03 last_checked_at instant mismatch';
+            END IF;
+            IF (
+              SELECT last_checked_at
+              FROM public.source_documents
+              WHERE id = '37f271ad-c13d-4650-bb5b-6a54e3777d69'::uuid
+            ) IS DISTINCT FROM TIMESTAMPTZ '2026-09-05T17:02:03Z' THEN
+              RAISE EXCEPTION 'SRC04 last_checked_at instant mismatch';
+            END IF;
+            IF (
+              SELECT last_checked_at
+              FROM public.source_documents
+              WHERE id = '74ba3585-8912-4bd1-904d-8f942f420e8c'::uuid
+            ) IS DISTINCT FROM TIMESTAMPTZ '2026-09-05T17:02:05Z' THEN
+              RAISE EXCEPTION 'SRC05 last_checked_at instant mismatch';
+            END IF;
+            IF (
+              SELECT last_checked_at
+              FROM public.source_documents
+              WHERE id = 'b17b767f-7eaf-4e12-a2db-6dcf4f024c25'::uuid
+            ) IS DISTINCT FROM TIMESTAMPTZ '2026-09-05T17:02:06Z' THEN
+              RAISE EXCEPTION 'SRC06 last_checked_at instant mismatch';
+            END IF;
+            IF (
+              SELECT last_checked_at
+              FROM public.source_documents
+              WHERE id = '31c298f9-cde7-407b-be2d-692235e1a391'::uuid
+            ) IS DISTINCT FROM TIMESTAMPTZ '2026-09-05T17:02:08Z' THEN
+              RAISE EXCEPTION 'SRC07 last_checked_at instant mismatch';
+            END IF;
+
+            -- S05 split
+            SELECT count(DISTINCT id) INTO v_n
+            FROM public.source_documents
+            WHERE id IN (
+              'b17b767f-7eaf-4e12-a2db-6dcf4f024c25'::uuid,
+              '31c298f9-cde7-407b-be2d-692235e1a391'::uuid
+            );
+            IF v_n <> 2 THEN
+              RAISE EXCEPTION 'S05 HTML/PDF are not two distinct rows';
+            END IF;
+
+            -- Timezone
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedules
+            WHERE timezone = 'GMT+9';
+            IF v_n <> 5 THEN
+              RAISE EXCEPTION 'GMT+9 schedule count=%', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedules
+            WHERE timezone IS NULL;
+            IF v_n <> 10 THEN
+              RAISE EXCEPTION 'NULL timezone schedule count=%', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedules
+            WHERE timezone IS NOT NULL AND timezone IS DISTINCT FROM 'GMT+9';
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'unexpected timezone values present';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedules
+            WHERE id IN (
+              '3e137100-0a35-48bb-bf52-4f2b5d88782e'::uuid,
+              '6eff94e1-d237-4a8e-867d-ca0a06c81513'::uuid,
+              '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid,
+              '84f7daa1-bbe0-4711-b919-926b29092bb8'::uuid,
+              '41b6dc2a-888c-49ba-9414-fc5357c4934f'::uuid
+            )
+              AND timezone = 'GMT+9';
+            IF v_n <> 5 THEN
+              RAISE EXCEPTION 'GMT+9 UUID set mismatch';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedules
+            WHERE id IN (
+              '0c7fbc83-e4c3-427c-8f3c-e502c2b5fae7'::uuid,
+              '5fd7701e-196e-48ea-80e6-b2e5ed20b8e7'::uuid,
+              '3bdaa20a-78aa-4dd2-abd7-602226dc5781'::uuid,
+              'c5492304-0687-4414-acbc-62361928c9f2'::uuid,
+              '255ad4c7-5dad-4d01-8652-70a6e6f60586'::uuid,
+              '4972bc72-1628-4275-b419-1d7ff0adf70d'::uuid,
+              '4b21a66c-c029-4443-8016-1023cd85a4cb'::uuid,
+              '9badf2f4-abf6-485f-bd13-3997cff34f9d'::uuid,
+              'c114aa23-e4e7-4643-a928-b710050cf576'::uuid,
+              'b3976703-2d4f-43a6-aaa5-7ad57698783f'::uuid
+            )
+              AND timezone IS NULL;
+            IF v_n <> 10 THEN
+              RAISE EXCEPTION 'NULL timezone UUID set mismatch';
+            END IF;
+
+            -- Temporal semantics
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedules
+            WHERE NOT (
+              (
+                temporal_precision = 'date'
+                AND start_at IS NULL
+                AND end_at IS NULL
+                AND (start_date IS NOT NULL OR end_date IS NOT NULL)
+                AND (start_date IS NULL OR end_date IS NULL OR start_date <= end_date)
+              )
+              OR
+              (
+                temporal_precision = 'datetime'
+                AND start_date IS NULL
+                AND end_date IS NULL
+                AND (start_at IS NOT NULL OR end_at IS NOT NULL)
+                AND (start_at IS NULL OR end_at IS NULL OR start_at <= end_at)
+              )
+            );
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'temporal invalid rows=%', v_n;
+            END IF;
+
+            -- SUB82
+            SELECT verification_status, admission_schedule_id, verified_at
+              INTO v_text, v_uuid, v_ts
+            FROM public.document_submissions
+            WHERE id = '46bd94bf-42dd-4d85-85c5-ec828061f6df'::uuid;
+            IF v_text IS DISTINCT FROM 'needs_review'
+               OR v_uuid IS NOT NULL
+               OR v_ts IS NOT NULL THEN
+              RAISE EXCEPTION 'SUB82 safeguard failed status=% schedule=% verified_at=%',
+                v_text, v_uuid, v_ts;
+            END IF;
+            IF v_uuid IS NOT DISTINCT FROM '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid THEN
+              RAISE EXCEPTION 'SUB82 references SCH11';
+            END IF;
+
+            -- SCH10/SCH11 CIT29
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedule_citations
+            WHERE admission_schedule_id = '6eff94e1-d237-4a8e-867d-ca0a06c81513'::uuid
+              AND source_citation_id = '74c5f6e7-a8fe-4c4c-9bcc-598f063b3608'::uuid;
+            IF v_n <> 1 THEN
+              RAISE EXCEPTION 'SCH10→CIT29 count=%', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedule_citations
+            WHERE admission_schedule_id = '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid
+              AND source_citation_id = '74c5f6e7-a8fe-4c4c-9bcc-598f063b3608'::uuid;
+            IF v_n <> 1 THEN
+              RAISE EXCEPTION 'SCH11→CIT29 count=%', v_n;
+            END IF;
+
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedule_citations
+            WHERE admission_schedule_id = '6eff94e1-d237-4a8e-867d-ca0a06c81513'::uuid
+              AND source_citation_id IN (
+                '2cae549f-57ff-4e35-8ec8-a5a07628a3b7'::uuid,
+                'b2300055-7f04-4805-8938-00d2fb292df4'::uuid,
+                '74c5f6e7-a8fe-4c4c-9bcc-598f063b3608'::uuid
+              );
+            IF v_n <> 3 THEN
+              RAISE EXCEPTION 'SCH10 citation set size mismatch';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedule_citations
+            WHERE admission_schedule_id = '6eff94e1-d237-4a8e-867d-ca0a06c81513'::uuid;
+            IF v_n <> 3 THEN
+              RAISE EXCEPTION 'SCH10 unexpected extra citations';
+            END IF;
+
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedule_citations
+            WHERE admission_schedule_id = '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid
+              AND source_citation_id IN (
+                'b03a90b5-c3d5-42ea-b6ff-1ff61ebb4416'::uuid,
+                '74c5f6e7-a8fe-4c4c-9bcc-598f063b3608'::uuid
+              );
+            IF v_n <> 2 THEN
+              RAISE EXCEPTION 'SCH11 citation set size mismatch';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedule_citations
+            WHERE admission_schedule_id = '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid;
+            IF v_n <> 2 THEN
+              RAISE EXCEPTION 'SCH11 unexpected extra citations';
+            END IF;
+
+            -- Provenance
+            SELECT
+              (
+                SELECT count(*)
+                FROM public.admission_section_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM public.admission_program_sources ps
+                  WHERE ps.admission_program_id = 'd35bda6d-9fed-48f1-8687-28c5d07be455'::uuid
+                    AND ps.source_document_id = c.source_document_id
+                )
+              )
+              + (
+                SELECT count(*)
+                FROM public.required_document_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM public.admission_program_sources ps
+                  WHERE ps.admission_program_id = 'd35bda6d-9fed-48f1-8687-28c5d07be455'::uuid
+                    AND ps.source_document_id = c.source_document_id
+                )
+              )
+              + (
+                SELECT count(*)
+                FROM public.document_submission_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM public.admission_program_sources ps
+                  WHERE ps.admission_program_id = 'd35bda6d-9fed-48f1-8687-28c5d07be455'::uuid
+                    AND ps.source_document_id = c.source_document_id
+                )
+              )
+              + (
+                SELECT count(*)
+                FROM public.admission_schedule_citations r
+                JOIN public.source_citations c ON c.id = r.source_citation_id
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM public.admission_program_sources ps
+                  WHERE ps.admission_program_id = 'd35bda6d-9fed-48f1-8687-28c5d07be455'::uuid
+                    AND ps.source_document_id = c.source_document_id
+                )
+              )
+            INTO v_n;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'provenance violations=%', v_n;
+            END IF;
+
+            -- verified_at policy
+            SELECT verified_at INTO v_ts
+            FROM public.admission_programs
+            WHERE id = 'd35bda6d-9fed-48f1-8687-28c5d07be455'::uuid;
+            IF v_ts IS NOT NULL THEN
+              RAISE EXCEPTION 'P01 verified_at is not NULL';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_sections
+            WHERE verification_status = 'verified' AND verified_at IS NULL;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'verified sections missing verified_at: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.admission_schedules
+            WHERE verification_status = 'verified' AND verified_at IS NULL;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'verified schedules missing verified_at: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.required_documents
+            WHERE verification_status = 'verified' AND verified_at IS NULL;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'verified documents missing verified_at: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions
+            WHERE verification_status = 'verified' AND verified_at IS NULL;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'verified submissions missing verified_at: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.required_document_choice_groups
+            WHERE verification_status = 'verified' AND verified_at IS NULL;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'verified choice groups missing verified_at: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.source_citations
+            WHERE verified_at IS NULL;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'source_citations missing verified_at: %', v_n;
+            END IF;
+
+            -- DOC01-40 each have 2 submissions; DOC41/42 have 1 each (SUB83/84)
+            SELECT count(*) INTO v_n
+            FROM public.required_documents d
+            WHERE d.id NOT IN (
+              '47110092-f5be-419c-baa5-39e6154b1ba8'::uuid,
+              'cf5b159c-6931-4adf-bfd6-a4614f3d7c62'::uuid
+            )
+              AND (
+                SELECT count(*)
+                FROM public.document_submissions s
+                WHERE s.required_document_id = d.id
+              ) <> 2;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'DOC01-40 documents without exactly 2 submissions: %', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.required_documents d
+            WHERE d.id NOT IN (
+              '47110092-f5be-419c-baa5-39e6154b1ba8'::uuid,
+              'cf5b159c-6931-4adf-bfd6-a4614f3d7c62'::uuid
+            );
+            IF v_n <> 40 THEN
+              RAISE EXCEPTION 'DOC01-40 count=%', v_n;
+            END IF;
+
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions
+            WHERE required_document_id = '47110092-f5be-419c-baa5-39e6154b1ba8'::uuid
+              AND id = 'fe764fa1-fb88-4a63-9395-5988fa0b30fe'::uuid
+              AND admission_schedule_id = '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid;
+            IF v_n <> 1 THEN
+              RAISE EXCEPTION 'DOC41/SUB83 structure mismatch';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions
+            WHERE required_document_id = 'cf5b159c-6931-4adf-bfd6-a4614f3d7c62'::uuid
+              AND id = '815a43a3-8fb7-4ddc-a2f7-2e13a4ef68f7'::uuid
+              AND admission_schedule_id = '8a3e7f88-b24d-4822-9737-485c2539c8cf'::uuid;
+            IF v_n <> 1 THEN
+              RAISE EXCEPTION 'DOC42/SUB84 structure mismatch';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions
+            WHERE required_document_id IN (
+              '47110092-f5be-419c-baa5-39e6154b1ba8'::uuid,
+              'cf5b159c-6931-4adf-bfd6-a4614f3d7c62'::uuid
+            );
+            IF v_n <> 2 THEN
+              RAISE EXCEPTION 'DOC41/42 unexpected submission count=%', v_n;
+            END IF;
+
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions
+            WHERE id IN (
+              'bbfadff6-d352-4a2d-8d23-86feadd1248f'::uuid,
+              '46bd94bf-42dd-4d85-85c5-ec828061f6df'::uuid,
+              'fe764fa1-fb88-4a63-9395-5988fa0b30fe'::uuid,
+              '815a43a3-8fb7-4ddc-a2f7-2e13a4ef68f7'::uuid
+            );
+            IF v_n <> 4 THEN
+              RAISE EXCEPTION 'SUB81-84 missing rows';
+            END IF;
+
+            -- Composite ownership
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions s
+            JOIN public.required_documents d ON d.id = s.required_document_id
+            WHERE d.admission_program_id IS DISTINCT FROM s.admission_program_id;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'submission/document program mismatch=%', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.document_submissions s
+            JOIN public.admission_schedules h ON h.id = s.admission_schedule_id
+            WHERE s.admission_schedule_id IS NOT NULL
+              AND h.admission_program_id IS DISTINCT FROM s.admission_program_id;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'submission/schedule program mismatch=%', v_n;
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM public.required_document_choice_group_items i
+            JOIN public.required_document_choice_groups g ON g.id = i.choice_group_id
+            JOIN public.required_documents d ON d.id = i.required_document_id
+            WHERE g.admission_program_id IS DISTINCT FROM i.admission_program_id
+               OR d.admission_program_id IS DISTINCT FROM i.admission_program_id;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'choice item program mismatch=%', v_n;
+            END IF;
+
+            -- Duplicate pairs
+            SELECT count(*) INTO v_n
+            FROM (
+              SELECT admission_program_id, source_document_id
+              FROM public.admission_program_sources
+              GROUP BY 1, 2
+              HAVING count(*) > 1
+            ) x;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'duplicate program sources';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM (
+              SELECT choice_group_id, required_document_id
+              FROM public.required_document_choice_group_items
+              GROUP BY 1, 2
+              HAVING count(*) > 1
+            ) x;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'duplicate choice items';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM (
+              SELECT admission_section_id, source_citation_id
+              FROM public.admission_section_citations
+              GROUP BY 1, 2
+              HAVING count(*) > 1
+            ) x;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'duplicate section citations';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM (
+              SELECT required_document_id, source_citation_id
+              FROM public.required_document_citations
+              GROUP BY 1, 2
+              HAVING count(*) > 1
+            ) x;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'duplicate document citations';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM (
+              SELECT document_submission_id, source_citation_id
+              FROM public.document_submission_citations
+              GROUP BY 1, 2
+              HAVING count(*) > 1
+            ) x;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'duplicate submission citations';
+            END IF;
+            SELECT count(*) INTO v_n
+            FROM (
+              SELECT admission_schedule_id, source_citation_id
+              FROM public.admission_schedule_citations
+              GROUP BY 1, 2
+              HAVING count(*) > 1
+            ) x;
+            IF v_n <> 0 THEN
+              RAISE EXCEPTION 'duplicate schedule citations';
+            END IF;
+          END
+          $validate$;
+          SQL
+          echo "A: independent runtime validation PASS"
+
+      - name: Database A — snapshot counts after clean apply
+        id: snapshot_a
+        run: |
+          set -euo pipefail
+          {
+            echo "universities=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.universities;')"
+            echo "admission_categories=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_categories;')"
+            echo "source_documents=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.source_documents;')"
+            echo "admission_programs=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_programs;')"
+            echo "admission_program_sources=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_program_sources;')"
+            echo "admission_sections=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_sections;')"
+            echo "admission_schedules=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_schedules;')"
+            echo "required_documents=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_documents;')"
+            echo "document_submissions=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.document_submissions;')"
+            echo "required_document_choice_groups=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_document_choice_groups;')"
+            echo "required_document_choice_group_items=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_document_choice_group_items;')"
+            echo "source_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.source_citations;')"
+            echo "admission_section_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_section_citations;')"
+            echo "required_document_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_document_citations;')"
+            echo "document_submission_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.document_submission_citations;')"
+            echo "admission_schedule_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_schedule_citations;')"
+          } | tee /tmp/ku2027_counts_a.txt
+          {
+            echo "uuids_universities=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.universities;')"
+            echo "uuids_programs=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_programs;')"
+            echo "uuids_sources=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_documents;')"
+            echo "uuids_schedules=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_schedules;')"
+            echo "uuids_citations=$(psql -d ku2027_clean -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_citations;')"
+          } | tee /tmp/ku2027_uuids_a.txt
+
+      - name: Database A — second-run preflight must fail
+        run: |
+          set -euo pipefail
+          set +e
+          psql -d ku2027_clean -v ON_ERROR_STOP=1 -f "$KU_FILE"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Second-run unexpectedly succeeded"
+            exit 1
+          fi
+          echo "Second-run failed as expected (exit ${rc})"
+
+      - name: Database A — second-run post-state unchanged
+        run: |
+          set -euo pipefail
+          {
+            echo "universities=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.universities;')"
+            echo "admission_categories=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_categories;')"
+            echo "source_documents=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.source_documents;')"
+            echo "admission_programs=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_programs;')"
+            echo "admission_program_sources=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_program_sources;')"
+            echo "admission_sections=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_sections;')"
+            echo "admission_schedules=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_schedules;')"
+            echo "required_documents=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_documents;')"
+            echo "document_submissions=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.document_submissions;')"
+            echo "required_document_choice_groups=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_document_choice_groups;')"
+            echo "required_document_choice_group_items=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_document_choice_group_items;')"
+            echo "source_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.source_citations;')"
+            echo "admission_section_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_section_citations;')"
+            echo "required_document_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.required_document_citations;')"
+            echo "document_submission_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.document_submission_citations;')"
+            echo "admission_schedule_citations=$(psql -d ku2027_clean -Atc 'SELECT count(*) FROM public.admission_schedule_citations;')"
+          } > /tmp/ku2027_counts_after_second.txt
+          if ! cmp -s /tmp/ku2027_counts_a.txt /tmp/ku2027_counts_after_second.txt; then
+            echo "Counts changed after expected-failure second-run"
+            echo "BEFORE:"; cat /tmp/ku2027_counts_a.txt
+            echo "AFTER:"; cat /tmp/ku2027_counts_after_second.txt
+            exit 1
+          fi
+          echo "Second-run post-state unchanged PASS"
+
+      - name: Database B — fresh repeatability
+        run: |
+          set -euo pipefail
+          psql -d ku2027_repeat -v ON_ERROR_STOP=1 -f "$SCHEMA_FILE"
+          psql -d ku2027_repeat -v ON_ERROR_STOP=1 -f "$KU_FILE"
+          {
+            echo "universities=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.universities;')"
+            echo "admission_categories=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.admission_categories;')"
+            echo "source_documents=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.source_documents;')"
+            echo "admission_programs=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.admission_programs;')"
+            echo "admission_program_sources=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.admission_program_sources;')"
+            echo "admission_sections=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.admission_sections;')"
+            echo "admission_schedules=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.admission_schedules;')"
+            echo "required_documents=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.required_documents;')"
+            echo "document_submissions=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.document_submissions;')"
+            echo "required_document_choice_groups=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.required_document_choice_groups;')"
+            echo "required_document_choice_group_items=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.required_document_choice_group_items;')"
+            echo "source_citations=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.source_citations;')"
+            echo "admission_section_citations=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.admission_section_citations;')"
+            echo "required_document_citations=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.required_document_citations;')"
+            echo "document_submission_citations=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.document_submission_citations;')"
+            echo "admission_schedule_citations=$(psql -d ku2027_repeat -Atc 'SELECT count(*) FROM public.admission_schedule_citations;')"
+          } > /tmp/ku2027_counts_b.txt
+          if ! cmp -s /tmp/ku2027_counts_a.txt /tmp/ku2027_counts_b.txt; then
+            echo "Database B counts differ from Database A"
+            echo "A:"; cat /tmp/ku2027_counts_a.txt
+            echo "B:"; cat /tmp/ku2027_counts_b.txt
+            exit 1
+          fi
+          {
+            echo "uuids_universities=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.universities;')"
+            echo "uuids_programs=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_programs;')"
+            echo "uuids_sources=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_documents;')"
+            echo "uuids_schedules=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.admission_schedules;')"
+            echo "uuids_citations=$(psql -d ku2027_repeat -Atc 'SELECT string_agg(id::text, ',' ORDER BY id::text) FROM public.source_citations;')"
+          } > /tmp/ku2027_uuids_b.txt
+          if ! cmp -s /tmp/ku2027_uuids_a.txt /tmp/ku2027_uuids_b.txt; then
+            echo "Database B UUID sets differ from Database A"
+            echo "A:"; cat /tmp/ku2027_uuids_a.txt
+            echo "B:"; cat /tmp/ku2027_uuids_b.txt
+            exit 1
+          fi
+          echo "Fresh DB repeatability PASS"
+
+      - name: Database C — explicit-transaction rollback probe
+        run: |
+          set -euo pipefail
+          psql -d ku2027_rollback_probe -v ON_ERROR_STOP=1 -f "$SCHEMA_FILE"
+          {
+            echo 'BEGIN;'
+            cat "$KU_FILE"
+            printf '%s\n' "DO \$\$ BEGIN RAISE EXCEPTION 'KU27 rollback probe'; END \$\$;"
+          } > /tmp/ku27_rollback_probe.sql
+          set +e
+          psql -d ku2027_rollback_probe -v ON_ERROR_STOP=1 -f /tmp/ku27_rollback_probe.sql
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Rollback probe unexpectedly committed"
+            exit 1
+          fi
+          uni="$(psql -d ku2027_rollback_probe -Atc "SELECT count(*) FROM public.universities WHERE id = '86d02517-736f-4e4b-a80f-b95e518c3433'::uuid;")"
+          prog="$(psql -d ku2027_rollback_probe -Atc "SELECT count(*) FROM public.admission_programs WHERE id = 'd35bda6d-9fed-48f1-8687-28c5d07be455'::uuid;")"
+          src="$(psql -d ku2027_rollback_probe -Atc "SELECT count(*) FROM public.source_documents WHERE id IN ('91ce33c3-e327-4681-a267-04c1ba32c172'::uuid,'316d1a61-6119-4d15-ac69-5395279ff99a'::uuid,'5e5f6845-dca3-4d4a-8616-7c65bec86c7d'::uuid,'37f271ad-c13d-4650-bb5b-6a54e3777d69'::uuid,'74ba3585-8912-4bd1-904d-8f942f420e8c'::uuid,'b17b767f-7eaf-4e12-a2db-6dcf4f024c25'::uuid,'31c298f9-cde7-407b-be2d-692235e1a391'::uuid);")"
+          if [ "$uni" != "0" ] || [ "$prog" != "0" ] || [ "$src" != "0" ]; then
+            echo "Rollback probe left rows behind universities=${uni} programs=${prog} sources=${src}"
+            exit 1
+          fi
+          echo "PostgreSQL explicit-transaction rollback probe: PASS"
+          echo "Supabase runner transaction behavior: NOT YET PROVEN"
