@@ -31,10 +31,10 @@
 | admission_section_citations | 24 |
 | required_document_citations | 56 |
 | document_submission_citations | 90 |
-| admission_schedule_citations | 28 |
+| admission_schedule_citations | 30 |
 
-상세는 §22. Join 합계 24+56+90+28 = **198**.
-Static audit: §25. RequiredDocument **42** / DocumentSubmission **84** 유지.
+상세는 §22. Join 합계 24+56+90+30 = **200**.
+Static audit: §25. RequiredDocument **42** / DocumentSubmission **84** 유지. source_citations **33** 유지.
 
 ---
 
@@ -173,20 +173,35 @@ S06는 current `admission_program_sources`에 연결하지 않는다. current fa
 
 `information_type` / `verification_status` / `availability_status`는 **해당 table에 column이 있을 때만** DB field로 적는다.
 
-Timezone (`admission_schedules.timezone`): 모든 15 schedule의 DB intended value = **`GMT+9`**.
+Timezone (`admission_schedules.timezone`)는 schedule마다 source evidence로 판정한다. 15개 모두 `GMT+9`가 아니다.
+
+**Correction reason (final pre-import verification):** 이전 ROW_MAP은 SCH01–SCH15 모두 `timezone = GMT+9`로 계획했다. 재확인 결과 timezone literal은 다음뿐이다.
+
+| artifact | timezone literal |
+|---|---|
+| S01 (June guide) | 없음 |
+| S02 (forms page) | 없음 |
+| S03 (application notice) | 없음 |
+| S04 (interview PDF) | 없음 |
+| S05 HTML | 없음 |
+| S05 PDF p2 | `본 안내사항에 기재된 일자와 일시는 한국 시간(GMT+9)` |
+
+S05 PDF evidence가 없는 schedule까지 GMT+9로 확장한 것은 source-supported fact가 아니라 interpretation이었다. 한국 대학 / 서울 행사 / 다른 공지의 GMT+9 / 상식적 한국 시간이라는 이유만으로는 값을 넣지 않는다.
 
 | 구분 | 값 |
 |---|---|
-| source literal (S05 PDF p2) | `한국 시간(GMT+9)` |
-| S01 printed timezone | 없음 (IANA/`Asia/Seoul`/`GMT+9` 문자열을 인쇄하지 않음) |
-| DB column intended value | `GMT+9` |
-| IANA equivalent (not stored) | `Asia/Seoul` |
+| source literal (S05 PDF p2 only) | `한국 시간(GMT+9)` |
+| DB value when that statement applies to the schedule | `GMT+9` |
+| DB value when no approved source supports timezone | `NULL` |
+| not stored | `Asia/Seoul` |
 
-`Asia/Seoul`은 official source quotation이 아니다. IANA가 필요할 때를 위한 정규화 대응값일 뿐이다.
+`NULL`은 「공식 source가 timezone이 없다고 선언했다」가 아니다. approved source에서 timezone value를 확인하지 못했으므로 DB에 값을 추론해 넣지 않는다는 뜻이다.
 
-DATA_MODEL / schema: `timezone`은 nullable `text`. CHECK 없음. IANA 강제 없음. 현재 application도 IANA를 요구하지 않는다.
+`Asia/Seoul`은 official source quotation이 아니다. 저장하지 않는다.
 
-따라서 DB에는 source literal에 가까운 **`GMT+9`** 를 넣고, `Asia/Seoul`을 공식 기재처럼 쓰지 않는다. S01 시계 시각에 `GMT+9`를 쓰는 것은 S05가 입학처 안내 일시를 GMT+9라고 한 문맥을 같은 입학처 일정에 적용한 것이며, S01 원문 인용이 아니다. 이유: §25.2.
+DATA_MODEL / schema: `timezone`은 nullable `text`. CHECK 없음. IANA 강제 없음.
+
+적용 결과: **GMT+9 = 5** (SCH06, SCH10, SCH11, SCH12, SCH13). **NULL = 10** (SCH01–05, SCH07–09, SCH14–15). 이유: §11·§25.2.
 
 ---
 
@@ -419,25 +434,31 @@ schema `admission_schedules_temporal_fields_check`:
 
 S04가 같은 면접에 입실 시작·건물을 추가하면 **면접 schedule을 복제하지 않고** SCH04를 보강한다. 개인 고사실 호수는 저장하지 않음 (SCHEMA_GAP-03).
 
-공통: `admission_program_id` = KU27-P01, `timezone` = **`GMT+9`** (source literal / 입학처 시각 문맥. `Asia/Seoul`은 저장하지 않음. §4·§25.2), `verified_at` = TBD.
+공통: `admission_program_id` = KU27-P01, `verified_at` = TBD. `timezone`은 아래 열. `Asia/Seoul`은 저장하지 않음. §4·§25.2.
 
-| row_id | event_name | temporal_precision | start / end | location_text | description | verification_status | display_order | citations |
-|---|---|---|---|---|---|---|---:|---|
-| KU27-SCH01 | 원서접수 | datetime | start_at 2026-07-06 10:00, end_at 2026-07-08 17:00 | 온라인 | S03: 기간 중 24시간, Chrome/Edge, 전형료 결제 포함 마감. 개인정보 수정신청은 같은 기간(S03)이며 별도 event로 복제하지 않고 여기에 적음 | verified 후보 | 10 | CIT03, CIT23 |
-| KU27-SCH02 | 온라인 서식 입력 및 온라인 서류제출 | datetime | start_at 2026-07-06 10:00, end_at 2026-07-09 17:00 | 온라인 / 입학처 홈페이지 | S03는 서식 입력과 서류 업로드를 항으로 나누지만 요강은 한 기간. **한 logical window → 1 row**. S03 세부(교내활동확인서 등 서식 대상)는 description | verified 후보 | 20 | CIT03, CIT23 |
-| KU27-SCH03 | 1단계 합격자 발표 및 고사장 발표 | datetime | start_at = end_at 2026-07-31 17:00 | 입학처 홈페이지 | 순간 발표. 시간을 추정한 것이 아니라 공식 17:00 | verified 후보 | 30 | CIT05, CIT24 |
-| KU27-SCH04 | 면접고사 | datetime | start_at 2026-08-14 12:10, **end_at NULL** | 고려대학교 서울캠퍼스 우당교양관 | 요강: 12:30까지 입실 / 서울캠퍼스. S04: 12:10 시작 ~ 12:30 입실완료, 우당교양관. complementary. 면접 종료 시각은 공식 source에 없음 → 추정 금지 | verified 후보 | 40 | CIT05, CIT24 |
-| KU27-SCH05 | 최초합격자 발표 | datetime | start_at = end_at 2026-09-04 17:00 | 입학처 홈페이지 | | verified 후보 | 50 | CIT05, CIT06 |
-| KU27-SCH06 | 문서등록 | datetime | start_at 2026-12-21 10:00, end_at 2026-12-23 14:00 | 온라인 | S05도 동일 기간 재진술. 복제 row 없음 | verified 후보 | 60 | CIT06, CIT28, CIT29 |
-| KU27-SCH07 | 1차 충원합격 발표 및 등록 | datetime | start_at 2026-12-23 21:00, end_at 2026-12-24 14:00 | 입학처 홈페이지 | S01 p5 1차 행. 발표와 등록마감을 한 충원 round로 봄 | verified 후보 | 70 | CIT06 |
-| KU27-SCH08 | 2차 충원합격 발표 및 등록 | datetime | start_at 2026-12-24 21:00, end_at 2026-12-27 10:00 | 입학처 홈페이지 | S01 p5 2차 행 | verified 후보 | 80 | CIT06 |
-| KU27-SCH09 | 3차 충원합격 발표 및 등록 | datetime | start_at 2026-12-27 13:00, end_at 2026-12-28 10:00 | 입학처 홈페이지 | S01 p5 3차 행 | verified 후보 | 90 | CIT06 |
-| KU27-SCH10 | 등록포기 (문서등록 취소) | datetime | start_at NULL, end_at 2026-12-29 10:00 | 입학처 홈페이지 | 마감-only datetime. schema 허용. S05 p3도 `~ 2026.12.29 10:00` | verified 후보 | 100 | CIT06, CIT28 |
-| KU27-SCH11 | 최종합격자 원본 서류 제출 | date | start_date NULL, end_date 2027-02-10 | 우편 | 요강 p4 「까지」. 도착/등기 조건은 description. **이 end_date를 졸업예정자 졸업증명서의 유일한 기한으로 단정하지 않음**. SUB82를 이 schedule에 연결하지 않음 (§25.1) | verified 후보 | 110 | CIT31 |
-| KU27-SCH12 | 등록금 납부 | date | start_date 2027-02-15, end_date 2027-02-16 | NULL | S01 p5와 S05가 날짜를 말함. S05 HTML은 상세 일시 추후 공지 → **시간 추정 금지**. date precision | verified 후보 | 120 | CIT06, CIT28, CIT29 |
-| KU27-SCH13 | 입학허가통지서 출력 | datetime | start_at 2026-09-04 17:00, end_at 2026-09-30 17:00 | 입학처 홈페이지 | S05: 합격자 발표 시 ~ 09.30 17:00. 시작은 최초합격 발표(SCH05)와 같은 공식 시점. 시작 시각을 임의 midnight으로 두지 않음 | verified 후보 | 130 | CIT28, CIT29 |
-| KU27-SCH14 | 면접 편의제공 신청 | date | start_date NULL, end_date 2026-08-11 | 이메일 (S04) | S04: 2026.08.11까지. 요강 p6는 「면접 2일 전」generic. complementary cycle deadline. 요강을 버려 S04만 쓴 것이 아니라 description에 둘 다 보존 | verified 후보 | 140 | CIT25, CIT32, CIT26 |
-| KU27-SCH15 | 신분증 미소지자 본인확인 | datetime | start_at 2026-08-18 14:00, end_at 2026-08-18 17:00 | 입학처 방문 | S04 p2. **해당자** 조건부 event. 전원 면접이 아니므로 SCH04와 합치지 않음 | verified 후보 | 150 | CIT25 |
+`timezone = NULL`인 row: 해당 schedule의 승인 source에 timezone 근거가 없음. 값이 없다고 공식 선언된 것이 아니라, 확인되지 않은 값을 추론하지 않는다는 뜻이다.
+
+`timezone = GMT+9`인 row: S05 PDF p2 blanket statement가 그 schedule에 적용되고, CIT29로 추적 가능하다.
+
+date / start / end 값은 이 correction에서 바꾸지 않는다. timestamptz 저장 시 쓰는 offset은 `timezone` column과 별개이며, source가 GMT+9를 인쇄하지 않은 row의 `timezone`을 채우지 않는다.
+
+| row_id | event_name | temporal_precision | start / end | location_text | description | timezone | verification_status | display_order | citations |
+|---|---|---|---|---|---|---|---|---:|---|
+| KU27-SCH01 | 원서접수 | datetime | start_at 2026-07-06 10:00, end_at 2026-07-08 17:00 | 온라인 | S03: 기간 중 24시간, Chrome/Edge, 전형료 결제 포함 마감. 개인정보 수정신청은 같은 기간(S03)이며 별도 event로 복제하지 않고 여기에 적음 | NULL | verified 후보 | 10 | CIT03, CIT23 |
+| KU27-SCH02 | 온라인 서식 입력 및 온라인 서류제출 | datetime | start_at 2026-07-06 10:00, end_at 2026-07-09 17:00 | 온라인 / 입학처 홈페이지 | S03는 서식 입력과 서류 업로드를 항으로 나누지만 요강은 한 기간. **한 logical window → 1 row**. S03 세부(교내활동확인서 등 서식 대상)는 description | NULL | verified 후보 | 20 | CIT03, CIT23 |
+| KU27-SCH03 | 1단계 합격자 발표 및 고사장 발표 | datetime | start_at = end_at 2026-07-31 17:00 | 입학처 홈페이지 | 순간 발표. 시간을 추정한 것이 아니라 공식 17:00 | NULL | verified 후보 | 30 | CIT05, CIT24 |
+| KU27-SCH04 | 면접고사 | datetime | start_at 2026-08-14 12:10, **end_at NULL** | 고려대학교 서울캠퍼스 우당교양관 | 요강: 12:30까지 입실 / 서울캠퍼스. S04: 12:10 시작 ~ 12:30 입실완료, 우당교양관. complementary. 면접 종료 시각은 공식 source에 없음 → 추정 금지 | NULL | verified 후보 | 40 | CIT05, CIT24 |
+| KU27-SCH05 | 최초합격자 발표 | datetime | start_at = end_at 2026-09-04 17:00 | 입학처 홈페이지 | | NULL | verified 후보 | 50 | CIT05, CIT06 |
+| KU27-SCH06 | 문서등록 | datetime | start_at 2026-12-21 10:00, end_at 2026-12-23 14:00 | 온라인 | S05도 동일 기간 재진술. 복제 row 없음. S05 PDF p2 표의 문서등록과 동일 logical event | GMT+9 | verified 후보 | 60 | CIT06, CIT28, CIT29 |
+| KU27-SCH07 | 1차 충원합격 발표 및 등록 | datetime | start_at 2026-12-23 21:00, end_at 2026-12-24 14:00 | 입학처 홈페이지 | S01 p5 1차 행. 발표와 등록마감을 한 충원 round로 봄 | NULL | verified 후보 | 70 | CIT06 |
+| KU27-SCH08 | 2차 충원합격 발표 및 등록 | datetime | start_at 2026-12-24 21:00, end_at 2026-12-27 10:00 | 입학처 홈페이지 | S01 p5 2차 행 | NULL | verified 후보 | 80 | CIT06 |
+| KU27-SCH09 | 3차 충원합격 발표 및 등록 | datetime | start_at 2026-12-27 13:00, end_at 2026-12-28 10:00 | 입학처 홈페이지 | S01 p5 3차 행 | NULL | verified 후보 | 90 | CIT06 |
+| KU27-SCH10 | 등록포기 (문서등록 취소) | datetime | start_at NULL, end_at 2026-12-29 10:00 | 입학처 홈페이지 | 마감-only datetime. schema 허용. S05 PDF p3 `합격자 문서등록 취소 ~ 2026.12.29 10:00`와 동일 logical event. timezone은 p2 blanket(CIT29). 새 citation 없음 | GMT+9 | verified 후보 | 100 | CIT06, CIT28, CIT29 |
+| KU27-SCH11 | 최종합격자 원본 서류 제출 | date | start_date NULL, end_date 2027-02-10 | 우편 | 요강 p4 「까지」. 도착/등기 조건은 description. S05 PDF p2 표의 원본서류 2027.02.10과 동일 logical event. **이 end_date를 졸업예정자 졸업증명서의 유일한 기한으로 단정하지 않음**. SUB82를 이 schedule에 연결하지 않음 (§25.1) | GMT+9 | verified 후보 | 110 | CIT31, CIT29 |
+| KU27-SCH12 | 등록금 납부 | date | start_date 2027-02-15, end_date 2027-02-16 | NULL | S01 p5와 S05가 날짜를 말함. S05 HTML은 상세 일시 추후 공지 → **시간 추정 금지**. date precision | GMT+9 | verified 후보 | 120 | CIT06, CIT28, CIT29 |
+| KU27-SCH13 | 입학허가통지서 출력 | datetime | start_at 2026-09-04 17:00, end_at 2026-09-30 17:00 | 입학처 홈페이지 | S05: 합격자 발표 시 ~ 09.30 17:00. 시작은 최초합격 발표(SCH05)와 같은 공식 시점. 시작 시각을 임의 midnight으로 두지 않음 | GMT+9 | verified 후보 | 130 | CIT28, CIT29 |
+| KU27-SCH14 | 면접 편의제공 신청 | date | start_date NULL, end_date 2026-08-11 | 이메일 (S04) | S04: 2026.08.11까지. 요강 p6는 「면접 2일 전」generic. complementary cycle deadline. 요강을 버려 S04만 쓴 것이 아니라 description에 둘 다 보존 | NULL | verified 후보 | 140 | CIT25, CIT32, CIT26 |
+| KU27-SCH15 | 신분증 미소지자 본인확인 | datetime | start_at 2026-08-18 14:00, end_at 2026-08-18 17:00 | 입학처 방문 | S04 p2. **해당자** 조건부 event. 전원 면접이 아니므로 SCH04와 합치지 않음 | NULL | verified 후보 | 150 | CIT25 |
 
 연도: 요강 표의 07–12월은 문맥상 2026년, 02월 원본/등록금은 2027년 (p4가 원본을 2027.02.10으로 명시).
 
@@ -654,7 +675,7 @@ S06 citation **0**.
 | KU27-CIT26 | SRC05 | 3 | [별첨1] | 편의제공 요청서 | 양식. 별도 RequiredDocument로 일반화하지 않음 (해당자 신청서) |
 | KU27-CIT27 | SRC06 | NULL | NULL | HTML 본문 항 3 | 원본 2027.2.10 및 졸업예정자 졸업증명서 2027년 3월 입학 전 |
 | KU27-CIT28 | SRC06 | NULL | NULL | HTML 본문 항 1–2 | 입학허가통지서 출력, 문서등록, 등록금 날짜·상세 추후 |
-| KU27-CIT29 | SRC07 | 2 | - 2 - | 신입생 관련 주요 학사 일정 | 입학허가통지서·문서등록·원본·등록금, GMT+9 |
+| KU27-CIT29 | SRC07 | 2 | - 2 - | 신입생 관련 주요 학사 일정 | 표: 입학허가통지서·문서등록·원본서류 2027.02.10·등록금. 각주: 입학허가통지서 출력 기간, 등록기간 등 본 안내사항에 기재된 일자와 일시는 한국 시간(GMT+9) |
 | KU27-CIT30 | SRC07 | 4 | - 4 - | 최종합격자 원본서류 제출 안내 | 원본 표 ~2027.2.10, 예정자 졸업증명서 추가, 별도 요청 출입국/재직 |
 | KU27-CIT31 | SRC02 | 4 | 4 | Ⅱ. 원서 접수 및 서류 제출 일정 (최종원본 행) | 최종합격자 원본서류 제출 2027.02.10까지, 우편 |
 | KU27-CIT32 | SRC02 | 6 | 6 | Ⅲ. 기본사항 편의제공 | 면접 2일 전까지 편의제공 요청서 |
@@ -665,6 +686,8 @@ CIT07과 CIT32는 같은 p6이지만 **최종 서류 항 vs 편의제공 항**�
 CIT19와 CIT33은 같은 p19이지만 **서류평가 표 vs 면접평가 표**라 분리.
 
 CIT26은 편의제공 요청서 양식. SCH14에만 연결.
+
+CIT29는 S05 PDF p2의 일정 표 **그리고** 같은 쪽 blanket GMT+9 각주의 evidence location이다. 새 timezone citation을 만들지 않는다. SCH06/SCH12/SCH13에 이미 연결되어 있고, SCH10/SCH11에도 재사용한다 (§17.4·§25.2).
 
 ---
 
@@ -745,29 +768,31 @@ If SUB01–40 already include 1 each (40), SUB10 extras +2, SUB41–80 = 40, SUB
 
 SUB11/12 양식은 document citation에 있고 submission은 CIT15면 충분.
 
-### 17.4 admission_schedule_citations (28)
+### 17.4 admission_schedule_citations (30)
 
-| schedule | citations | n |
-|---|---|---:|
-| SCH01 | CIT03, CIT23 | 2 |
-| SCH02 | CIT03, CIT23 | 2 |
-| SCH03 | CIT05, CIT24 | 2 |
-| SCH04 | CIT05, CIT24 | 2 |
-| SCH05 | CIT05, CIT06 | 2 |
-| SCH06 | CIT06, CIT28, CIT29 | 3 |
-| SCH07 | CIT06 | 1 |
-| SCH08 | CIT06 | 1 |
-| SCH09 | CIT06 | 1 |
-| SCH10 | CIT06, CIT28 | 2 |
-| SCH11 | CIT31 | 1 |
-| SCH12 | CIT06, CIT28, CIT29 | 3 |
-| SCH13 | CIT28, CIT29 | 2 |
-| SCH14 | CIT25, CIT32, CIT26 | 3 |
-| SCH15 | CIT25 | 1 |
+| schedule | citations | n | timezone provenance |
+|---|---|---:|---|
+| SCH01 | CIT03, CIT23 | 2 | none → timezone NULL |
+| SCH02 | CIT03, CIT23 | 2 | none → timezone NULL |
+| SCH03 | CIT05, CIT24 | 2 | none → timezone NULL |
+| SCH04 | CIT05, CIT24 | 2 | none → timezone NULL |
+| SCH05 | CIT05, CIT06 | 2 | none → timezone NULL |
+| SCH06 | CIT06, CIT28, CIT29 | 3 | CIT29 (S05 PDF p2 표 + GMT+9 각주) |
+| SCH07 | CIT06 | 1 | none → timezone NULL |
+| SCH08 | CIT06 | 1 | none → timezone NULL |
+| SCH09 | CIT06 | 1 | none → timezone NULL |
+| SCH10 | CIT06, CIT28, CIT29 | 3 | CIT29 reuse. event는 S05 PDF p3 문서등록 취소와 동일. 각주는 본 안내사항 일자·일시에 적용 |
+| SCH11 | CIT31, CIT29 | 2 | CIT29 reuse. event는 S05 PDF p2 원본서류 2027.02.10과 동일 |
+| SCH12 | CIT06, CIT28, CIT29 | 3 | CIT29 |
+| SCH13 | CIT28, CIT29 | 2 | CIT29 |
+| SCH14 | CIT25, CIT32, CIT26 | 3 | none → timezone NULL |
+| SCH15 | CIT25 | 1 | none → timezone NULL |
 
-2+2+2+2+2+3+1+1+1+2+1+3+2+3+1 = **28**.
+2+2+2+2+2+3+1+1+1+3+2+3+2+3+1 = **30**.
 
-SCH11에 S05 citations를 넣지 않는다. 졸업증명서 conflict는 SUB82만. SUB82는 SCH11 FK 없음.
+SCH10/SCH11에 CIT29를 추가한다. 같은 p2 GMT+9 각주가 여러 schedule의 `timezone`을 실제로 지원하므로 citation reuse. 새 SourceCitation 없음.
+
+SCH11에 CIT27/CIT30을 넣지 않는다. 그 두 citation은 졸업증명서 기한 conflict(SUB82) provenance이다. SUB82 → SCH11 FK는 두지 않는다.
 
 ---
 
@@ -874,6 +899,8 @@ Citation C → S05 PDF (SRC07)
 | CIT03에 원서일정+최종원본 뭉침 | CIT03 원서·온라인 행, CIT31 최종원본 행 |
 | 편의제공 요강 generic vs S04 날짜 | SCH14 1개, 두 citation |
 | ChoiceGroup 중복 | 1 group |
+| S05 PDF GMT+9를 모든 schedule에 확대 | **하지 않음.** GMT+9는 S05 PDF에 실제 존재하는 event + CIT29만 |
+| SCH10/SCH11 timezone용 새 citation | CIT29 재사용. CIT34+ 불필요 |
 
 의미가 다른 fact를 중복 제거로 합치지 않음.
 
@@ -898,9 +925,9 @@ Citation C → S05 PDF (SRC07)
 | admission_section_citations | 24 |
 | required_document_citations | 56 |
 | document_submission_citations | 90 |
-| admission_schedule_citations | 28 |
+| admission_schedule_citations | 30 |
 
-Citation relation 합계: 24+56+90+28 = **198**.
+Citation relation 합계: 24+56+90+30 = **200**.
 
 ---
 
@@ -934,6 +961,7 @@ Non-blocking for readiness A.
 | duplicate review | §21 |
 | provenance consistency | PASS, S06 예외 |
 | unresolved conflict를 needs_review로 표현 | SUB82 + CIT A/B/C |
+| schedule timezone이 row-level source와 일치 | yes. GMT+9 = 5 / NULL = 10. unsupported GMT+9 없음 |
 | blocking schema gap | 없음 |
 
 unresolved fact가 있어도 정확한 단위로 needs_review 보존이 가능하면 A.
@@ -976,18 +1004,31 @@ Static audit(§25) 후 재판정: **A 유지.**
 
 ### 25.2 Timezone
 
-| | |
+이전 계획(15개 모두 GMT+9)은 S05 PDF p2 blanket statement를 S01/S03/S04 시계에 확대 적용한 interpretation이었다. final verification 후 철회.
+
+| artifact | timezone literal |
 |---|---|
-| source literal | S05 PDF p2 `한국 시간(GMT+9)` |
-| S01 | timezone 문자열 없음 |
-| **DB `timezone`** | **`GMT+9`** |
-| not stored | `Asia/Seoul` |
+| S01 / S02 / S03 / S04 / S05 HTML | 없음 |
+| S05 PDF p2 | `본 안내사항에 기재된 일자와 일시는 한국 시간(GMT+9)` |
 
-`Asia/Seoul` is a normalized IANA timezone value for the official GMT+9 schedule context; it is not a literal source quotation.
+CIT29가 그 각주의 evidence location이다. 같은 각주가 여러 S05 PDF schedule의 `timezone`을 지원하므로 reuse.
 
-schema/`DATA_MODEL`: timezone은 nullable text. IANA 요구 없음. 따라서 source literal에 가까운 `GMT+9`를 저장하고 IANA를 공식값처럼 쓰지 않는 편이 더 정확하다.
+| SCH | S05 PDF에 동일 logical event? | CIT29? | timezone |
+|---|---|---|---|
+| SCH06 | p2 문서등록 2026.12.21 10:00–12.23 14:00 | 기존 | GMT+9 |
+| SCH10 | p3 문서등록 취소 ~2026.12.29 10:00. p2 표에는 없음. 본 안내사항 안의 같은 등록포기 event | 추가 reuse | GMT+9 |
+| SCH11 | p2 원본서류 2027.02.10 | 추가 reuse | GMT+9 |
+| SCH12 | p2 등록금 2027.02.15–02.16 | 기존 | GMT+9 |
+| SCH13 | p2 입학허가통지서 출력 ~09.30 17:00 | 기존 | GMT+9 |
+| SCH01–05, 07–09, 14–15 | S05 PDF에 해당 event 없음 | 없음 | NULL |
 
-timestamptz 구성 시 SQL 단계에서 같은 GMT+9 오프셋을 쓰되, `timezone` column에 `Asia/Seoul`을 넣지 않는다.
+SCH10: S01 등록포기 12.29 10:00과 S05 PDF p3 문서등록 취소는 같은 logical event. 각주는 「본 안내사항」의 일자·일시이므로 p3 기한에 적용된다. CIT29는 timezone statement location이다. p3 전용 새 citation은 만들지 않음(event identity는 CIT06이 이미 담당).
+
+SCH11: p2 표의 원본서류 기한과 동일 event. CIT29 추가. CIT27/CIT30은 SUB82 conflict용으로 남기고 SCH11에 넣지 않음. SUB82 FK NULL 유지.
+
+`NULL` = unsupported-value omission. inferred absence 아님. `Asia/Seoul` 저장 금지.
+
+date/datetime 값은 이 audit에서 오류가 없어 변경하지 않음.
 
 ### 25.3 date / datetime (15 schedules)
 
@@ -1016,12 +1057,12 @@ SUB81: SCH02 FK 없음 유지. 도착일 date vs 온라인 datetime.
 
 ### 25.6 Citations
 
-30→**33**. 같은 쪽의 **다른 의미**를 분리: CIT03/CIT31, CIT07/CIT32, CIT19/CIT33. 의미 없는 위치 중복 생성 없음. reuse는 같은 location이 여러 entity를 실제로 뒷받침할 때만 (예: CIT06 → SCH05–10, SCH12).
+30→**33** 유지. timezone correction으로 새 SourceCitation을 만들지 않음. 같은 쪽의 **다른 의미**를 분리: CIT03/CIT31, CIT07/CIT32, CIT19/CIT33. reuse는 같은 location이 여러 entity를 실제로 뒷받침할 때만 (예: CIT06 → SCH05–10, SCH12; CIT29 → SCH06, SCH10–13 timezone / S05 PDF 일정).
 
 ### 25.7 Citation relations / ProgramSource / provenance
 
-section 24, document 56, submission 90, schedule 28 = **198**.  
-경로: entity → citation → SRC02–07 → PS01–06. S06 current relation **0**. **PASS.**
+section 24, document 56, submission 90, schedule 30 = **200**.  
+경로: entity → citation → SRC02–07 → PS01–06. SCH10/SCH11 → CIT29 → SRC07 → PS06. S06 current relation **0**. **PASS.**
 
 ### 25.8 slug / timestamps
 
@@ -1033,10 +1074,10 @@ section 24, document 56, submission 90, schedule 28 = **198**.
 **A. Ready for KU 2027 data migration draft**
 
 - 84 submissions가 row-level evidence와 일치
-- timezone mapping 명확 (literal vs IANA)
+- timezone은 row-level evidence와 일치 (GMT+9 = 5, NULL = 10). unsupported GMT+9 없음
 - S01/S06 근거 충분
 - S05 split 적절
 - conflict 국소화 (SUB82, FK NULL)
 - provenance PASS
 - blocking gap 없음
-- row count 내부 일치 (42/84/33/198)
+- row count 내부 일치 (42/84/33/200)
