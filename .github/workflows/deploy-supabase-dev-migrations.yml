@@ -4,34 +4,40 @@ on:
   workflow_dispatch:
     inputs:
       confirm_project_ref:
-        description: Type the target Supabase development project ref to confirm deployment.
+        description: Type the exact target Supabase development project ref. Must match the expected development project.
         required: true
         type: string
       confirm_migration_version:
-        description: 14-digit version of the single pending migration to apply.
+        description: Type the exact 14-digit version of the single pending migration to apply.
         required: true
         type: string
       confirm_migration_sha256:
-        description: SHA-256 of the local pending migration SQL file.
+        description: Type the 64-character hex SHA-256 of that local pending migration SQL file.
         required: true
         type: string
       confirm_apply:
-        description: Type APPLY to confirm database migration deployment.
+        description: Type APPLY exactly (case-sensitive) to confirm database mutation.
         required: true
         type: string
+
+concurrency:
+  group: supabase-dev-migrations
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 # Manual apply of exactly one pending migration to the development database.
+# This workflow may only run from main.
 # PostgreSQL explicit-transaction rollback probe: PASS (separate runtime test).
-# Supabase runner transaction behavior: NOT YET PROVEN.
+# Supabase CLI failure rollback semantics: NOT PROVEN.
 # Do not assume this CLI run wraps the SQL file in one transaction.
 
 jobs:
   deploy-dev-migrations:
     name: Deploy one pending migration to development
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -43,6 +49,19 @@ jobs:
       EXPECTED_PROJECT_REF: styubtgvdjceulfurskb
       EXPECTED_CONFIRM_APPLY: APPLY
     steps:
+      - name: Confirm this run is on main
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_NAME}" != "main" ]; then
+            echo "This deployment workflow may only run from main."
+            exit 1
+          fi
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "This deployment workflow may only run from main."
+            exit 1
+          fi
+          echo "main-only execution guard PASS"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -65,7 +84,7 @@ jobs:
           fi
           echo "Required secrets are set"
 
-      - name: Confirm project, version, and APPLY
+      - name: Confirm project, version, SHA format, and APPLY
         run: |
           set -euo pipefail
           if [ "$CONFIRM_PROJECT_REF" != "$EXPECTED_PROJECT_REF" ]; then
@@ -84,15 +103,25 @@ jobs:
             echo "confirm_migration_version must be exactly 14 digits"
             exit 1
           fi
+          sha_input="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]')"
+          if [[ ! "$sha_input" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "confirm_migration_sha256 must be exactly 64 hexadecimal characters"
+            exit 1
+          fi
           echo "Project guard PASS"
           echo "APPLY confirmation PASS"
           echo "Migration version guard PASS: $CONFIRM_MIGRATION_VERSION"
+          echo "SHA-256 format guard PASS"
 
       - name: Resolve the confirmed local migration file
         id: resolve_target
         run: |
           set -euo pipefail
-          mapfile -t matches < <(find supabase/migrations -maxdepth 1 -type f -name "${CONFIRM_MIGRATION_VERSION}_*.sql" | sort)
+          shopt -s nullglob
+          matches=()
+          while IFS= read -r -d '' path; do
+            matches+=("$path")
+          done < <(find supabase/migrations -maxdepth 1 -type f -name "${CONFIRM_MIGRATION_VERSION}_*.sql" -print0 | sort -z)
           if [ "${#matches[@]}" -eq 0 ]; then
             echo "No local migration starts with ${CONFIRM_MIGRATION_VERSION}_"
             exit 1
@@ -103,15 +132,19 @@ jobs:
             exit 1
           fi
           target="${matches[0]}"
-          basename="$(basename "$target")"
+          target_basename="$(basename "$target")"
           echo "TARGET_MIGRATION_FILE=$target" >> "$GITHUB_ENV"
-          echo "TARGET_MIGRATION_BASENAME=$basename" >> "$GITHUB_ENV"
+          echo "TARGET_MIGRATION_BASENAME=$target_basename" >> "$GITHUB_ENV"
           echo "Resolved target: $target"
 
       - name: Confirm target migration SHA-256
         run: |
           set -euo pipefail
-          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]')"
+          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "confirm_migration_sha256 must be exactly 64 hexadecimal characters"
+            exit 1
+          fi
           actual="$(sha256sum "$TARGET_MIGRATION_FILE" | awk '{print $1}')"
           echo "expected SHA-256: $expected"
           echo "actual SHA-256:   $actual"
@@ -142,7 +175,7 @@ jobs:
             echo "Target migration missing after init"
             exit 1
           fi
-          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]')"
+          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
           actual="$(sha256sum "$TARGET_MIGRATION_FILE" | awk '{print $1}')"
           if [ "$actual" != "$expected" ]; then
             echo "Target migration SHA-256 changed after init"
@@ -191,6 +224,7 @@ jobs:
           def parse_sets(text: str):
               local = set()
               remote = set()
+              decorative = set("-|─│┼+ ├┤┬┴┌┐└┘═║╔╗╚╝╠╣╦╩╬")
               for raw in text.splitlines():
                   line = raw.replace("`", "")
                   if "Local" in line and "Remote" in line:
@@ -198,9 +232,15 @@ jobs:
                   sep = "│" if "│" in line else ("|" if "|" in line else "")
                   if not sep:
                       continue
-                  if set(line.strip()) <= set("-|─│┼+ "):
+                  if set(line.strip()) <= decorative:
                       continue
                   cols = [c.strip() for c in line.split(sep)]
+                  # Drop empty edge cells from box-drawing tables only.
+                  # Keep a 2-column empty Local cell ("   | <remote-version>").
+                  if cols and cols[0] == "" and len(cols) >= 3:
+                      cols = cols[1:]
+                  if cols and cols[-1] == "" and len(cols) >= 3:
+                      cols = cols[:-1]
                   local_col = cols[0] if cols else ""
                   remote_col = cols[1] if len(cols) > 1 else ""
                   local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
@@ -296,6 +336,7 @@ jobs:
           def parse_sets(text: str):
               local = set()
               remote = set()
+              decorative = set("-|─│┼+ ├┤┬┴┌┐└┘═║╔╗╚╝╠╣╦╩╬")
               for raw in text.splitlines():
                   line = raw.replace("`", "")
                   if "Local" in line and "Remote" in line:
@@ -303,9 +344,13 @@ jobs:
                   sep = "│" if "│" in line else ("|" if "|" in line else "")
                   if not sep:
                       continue
-                  if set(line.strip()) <= set("-|─│┼+ "):
+                  if set(line.strip()) <= decorative:
                       continue
                   cols = [c.strip() for c in line.split(sep)]
+                  if cols and cols[0] == "" and len(cols) >= 3:
+                      cols = cols[1:]
+                  if cols and cols[-1] == "" and len(cols) >= 3:
+                      cols = cols[:-1]
                   local_col = cols[0] if cols else ""
                   remote_col = cols[1] if len(cols) > 1 else ""
                   local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
@@ -376,6 +421,7 @@ jobs:
           def parse_sets(text: str):
               local = set()
               remote = set()
+              decorative = set("-|─│┼+ ├┤┬┴┌┐└┘═║╔╗╚╝╠╣╦╩╬")
               for raw in text.splitlines():
                   line = raw.replace("`", "")
                   if "Local" in line and "Remote" in line:
@@ -383,9 +429,13 @@ jobs:
                   sep = "│" if "│" in line else ("|" if "|" in line else "")
                   if not sep:
                       continue
-                  if set(line.strip()) <= set("-|─│┼+ "):
+                  if set(line.strip()) <= decorative:
                       continue
                   cols = [c.strip() for c in line.split(sep)]
+                  if cols and cols[0] == "" and len(cols) >= 3:
+                      cols = cols[1:]
+                  if cols and cols[-1] == "" and len(cols) >= 3:
+                      cols = cols[:-1]
                   local_col = cols[0] if cols else ""
                   remote_col = cols[1] if len(cols) > 1 else ""
                   local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
