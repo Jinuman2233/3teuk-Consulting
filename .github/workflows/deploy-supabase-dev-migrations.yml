@@ -4,7 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       confirm_project_ref:
-        description: Type the target Supabase project ref to confirm deployment.
+        description: Type the target Supabase development project ref to confirm deployment.
+        required: true
+        type: string
+      confirm_migration_version:
+        description: 14-digit version of the single pending migration to apply.
+        required: true
+        type: string
+      confirm_migration_sha256:
+        description: SHA-256 of the local pending migration SQL file.
         required: true
         type: string
       confirm_apply:
@@ -15,25 +23,103 @@ on:
 permissions:
   contents: read
 
+# Manual apply of exactly one pending migration to the development database.
+# PostgreSQL explicit-transaction rollback probe: PASS (separate runtime test).
+# Supabase runner transaction behavior: NOT YET PROVEN.
+# Do not assume this CLI run wraps the SQL file in one transaction.
+
 jobs:
   deploy-dev-migrations:
+    name: Deploy one pending migration to development
     runs-on: ubuntu-latest
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
       CONFIRM_PROJECT_REF: ${{ inputs.confirm_project_ref }}
+      CONFIRM_MIGRATION_VERSION: ${{ inputs.confirm_migration_version }}
+      CONFIRM_MIGRATION_SHA256: ${{ inputs.confirm_migration_sha256 }}
       CONFIRM_APPLY: ${{ inputs.confirm_apply }}
       EXPECTED_PROJECT_REF: styubtgvdjceulfurskb
       EXPECTED_CONFIRM_APPLY: APPLY
-      INITIAL_MIGRATION_VERSION: "20260825155343"
-      INITIAL_MIGRATION_FILE: supabase/migrations/20260825155343_initial_schema.sql
-      INITIAL_MIGRATION_BASENAME: 20260825155343_initial_schema.sql
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Confirm secrets are present
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
+            echo "SUPABASE_ACCESS_TOKEN is not set"
+            exit 1
+          fi
+          if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
+            echo "SUPABASE_DB_PASSWORD is not set"
+            exit 1
+          fi
+          if [ -z "${SUPABASE_PROJECT_ID:-}" ]; then
+            echo "SUPABASE_PROJECT_ID is not set"
+            exit 1
+          fi
+          echo "Required secrets are set"
+
+      - name: Confirm project, version, and APPLY
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_PROJECT_REF" != "$EXPECTED_PROJECT_REF" ]; then
+            echo "confirm_project_ref does not match the expected development project"
+            exit 1
+          fi
+          if [ "$SUPABASE_PROJECT_ID" != "$EXPECTED_PROJECT_REF" ]; then
+            echo "Project reference mismatch"
+            exit 1
+          fi
+          if [ "$CONFIRM_APPLY" != "$EXPECTED_CONFIRM_APPLY" ]; then
+            echo "confirm_apply was not APPLY"
+            exit 1
+          fi
+          if [[ ! "$CONFIRM_MIGRATION_VERSION" =~ ^[0-9]{14}$ ]]; then
+            echo "confirm_migration_version must be exactly 14 digits"
+            exit 1
+          fi
+          echo "Project guard PASS"
+          echo "APPLY confirmation PASS"
+          echo "Migration version guard PASS: $CONFIRM_MIGRATION_VERSION"
+
+      - name: Resolve the confirmed local migration file
+        id: resolve_target
+        run: |
+          set -euo pipefail
+          mapfile -t matches < <(find supabase/migrations -maxdepth 1 -type f -name "${CONFIRM_MIGRATION_VERSION}_*.sql" | sort)
+          if [ "${#matches[@]}" -eq 0 ]; then
+            echo "No local migration starts with ${CONFIRM_MIGRATION_VERSION}_"
+            exit 1
+          fi
+          if [ "${#matches[@]}" -ne 1 ]; then
+            echo "Expected exactly one local file for version ${CONFIRM_MIGRATION_VERSION}, found ${#matches[@]}"
+            printf '%s\n' "${matches[@]}"
+            exit 1
+          fi
+          target="${matches[0]}"
+          basename="$(basename "$target")"
+          echo "TARGET_MIGRATION_FILE=$target" >> "$GITHUB_ENV"
+          echo "TARGET_MIGRATION_BASENAME=$basename" >> "$GITHUB_ENV"
+          echo "Resolved target: $target"
+
+      - name: Confirm target migration SHA-256
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]')"
+          actual="$(sha256sum "$TARGET_MIGRATION_FILE" | awk '{print $1}')"
+          echo "expected SHA-256: $expected"
+          echo "actual SHA-256:   $actual"
+          if [ "$actual" != "$expected" ]; then
+            echo "Target migration SHA-256 does not match confirm_migration_sha256"
+            exit 1
+          fi
+          echo "SHA-256 confirmation PASS"
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v3
@@ -43,67 +129,27 @@ jobs:
       - name: Print Supabase CLI version
         run: supabase --version
 
-      - name: Confirm initial migration file exists
+      - name: Ephemeral supabase init if needed
         run: |
           set -euo pipefail
-          if [ ! -f "$INITIAL_MIGRATION_FILE" ]; then
-            echo "Missing migration file: $INITIAL_MIGRATION_FILE"
+          if [ -f supabase/config.toml ]; then
+            echo "supabase/config.toml already present; skipping init"
+          else
+            supabase init
+            echo "supabase init finished in CI working copy only"
+          fi
+          if [ ! -f "$TARGET_MIGRATION_FILE" ]; then
+            echo "Target migration missing after init"
             exit 1
           fi
-          echo "Migration file present: $INITIAL_MIGRATION_FILE"
+          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]')"
+          actual="$(sha256sum "$TARGET_MIGRATION_FILE" | awk '{print $1}')"
+          if [ "$actual" != "$expected" ]; then
+            echo "Target migration SHA-256 changed after init"
+            exit 1
+          fi
 
-      - name: Confirm only the expected local migration exists
-        run: |
-          set -euo pipefail
-          mapfile -t migration_files < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort)
-          if [ "${#migration_files[@]}" -ne 1 ]; then
-            echo "Expected exactly one local SQL migration, found ${#migration_files[@]}"
-            printf '%s\n' "${migration_files[@]}"
-            exit 1
-          fi
-          if [ "${migration_files[0]}" != "$INITIAL_MIGRATION_FILE" ]; then
-            echo "Unexpected local migration file: ${migration_files[0]}"
-            exit 1
-          fi
-          echo "Local migrations directory contains only $INITIAL_MIGRATION_BASENAME"
-
-      - name: Ephemeral supabase init
-        run: |
-          set -euo pipefail
-          supabase init
-          if [ ! -f "$INITIAL_MIGRATION_FILE" ]; then
-            echo "Migration file missing after supabase init"
-            exit 1
-          fi
-          echo "supabase init finished; migration file still present"
-
-      - name: Verify deployment target and confirmation
-        run: |
-          set -euo pipefail
-          if [ "$CONFIRM_PROJECT_REF" != "$EXPECTED_PROJECT_REF" ]; then
-            echo "confirm_project_ref does not match the expected development project"
-            exit 1
-          fi
-          if [ "${SUPABASE_PROJECT_ID:-}" != "$EXPECTED_PROJECT_REF" ]; then
-            echo "Project reference mismatch"
-            exit 1
-          fi
-          if [ "$CONFIRM_APPLY" != "$EXPECTED_CONFIRM_APPLY" ]; then
-            echo "confirm_apply was not APPLY"
-            exit 1
-          fi
-          echo "Deployment target and confirmation verified."
-
-      - name: Confirm database password env is set
-        run: |
-          set -euo pipefail
-          if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
-            echo "SUPABASE_DB_PASSWORD is not set"
-            exit 1
-          fi
-          echo "SUPABASE_DB_PASSWORD is set"
-
-      - name: Link hosted Supabase project
+      - name: Link hosted development project
         run: |
           set -euo pipefail
           pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
@@ -113,8 +159,7 @@ jobs:
             echo "SUPABASE_DB_PASSWORD is empty after trimming"
             exit 1
           fi
-          export SUPABASE_DB_PASSWORD="$pw"
-          supabase link --project-ref "$SUPABASE_PROJECT_ID"
+          supabase link --project-ref "$EXPECTED_PROJECT_REF" --password "$pw"
           echo "supabase link finished"
 
       - name: Migration list BEFORE apply
@@ -123,10 +168,9 @@ jobs:
           pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
           pw="${pw#"${pw%%[![:space:]]*}"}"
           pw="${pw%"${pw##*[![:space:]]}"}"
-          export SUPABASE_DB_PASSWORD="$pw"
           mkdir -p "$RUNNER_TEMP/supabase-deploy"
           set +e
-          before_output="$(supabase migration list --linked 2>&1)"
+          before_output="$(supabase migration list --linked --password "$pw" 2>&1)"
           before_status=$?
           set -e
           printf '%s\n' "$before_output"
@@ -138,14 +182,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import os
+          import re
           import sys
 
-          version = os.environ["INITIAL_MIGRATION_VERSION"]
+          version = os.environ["CONFIRM_MIGRATION_VERSION"]
           text = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-before.txt").read_text()
 
-          def parse(text: str):
-              local_present = False
-              remote_applied = False
+          def parse_sets(text: str):
+              local = set()
+              remote = set()
               for raw in text.splitlines():
                   line = raw.replace("`", "")
                   if "Local" in line and "Remote" in line:
@@ -158,21 +203,33 @@ jobs:
                   cols = [c.strip() for c in line.split(sep)]
                   local_col = cols[0] if cols else ""
                   remote_col = cols[1] if len(cols) > 1 else ""
-                  if version in local_col:
-                      local_present = True
-                  if version in remote_col:
-                      remote_applied = True
-              return local_present, remote_applied
+                  local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
+                  remote.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", remote_col))
+              return local, remote
 
-          local_present, remote_applied = parse(text)
-          print(f"initial migration local present BEFORE: {local_present}")
-          print(f"initial migration remote applied BEFORE: {remote_applied}")
-          if remote_applied:
-              print("Initial migration is already remote applied; refusing to push")
+          local, remote = parse_sets(text)
+          pending = sorted(local - remote)
+          remote_only = sorted(remote - local)
+          print(f"local versions: {sorted(local)}")
+          print(f"remote versions: {sorted(remote)}")
+          print(f"pending versions: {pending}")
+          print(f"remote-only versions: {remote_only}")
+          if remote_only:
+              print("Remote-only migration divergence; refusing to push")
               sys.exit(1)
-          if not local_present:
-              print("Initial migration is not present locally; refusing to push")
+          if version in remote:
+              print("Confirmed migration is already remote-applied; refusing to push")
               sys.exit(1)
+          if version not in local:
+              print("Confirmed migration is not present locally in migration list; refusing to push")
+              sys.exit(1)
+          if len(pending) != 1:
+              print(f"Expected exactly one pending migration, found {len(pending)}")
+              sys.exit(1)
+          if pending[0] != version:
+              print(f"Pending migration {pending[0]} does not match confirm_migration_version")
+              sys.exit(1)
+          print(f"Exactly-one-pending PASS: {version}")
           PY
 
       - name: Mandatory preflight dry-run
@@ -181,15 +238,15 @@ jobs:
           pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
           pw="${pw#"${pw%%[![:space:]]*}"}"
           pw="${pw%"${pw##*[![:space:]]}"}"
-          export SUPABASE_DB_PASSWORD="$pw"
           set +e
           dry_run_output="$(
-            supabase db push --dry-run --linked 2>&1
+            supabase db push --dry-run --linked --password "$pw" 2>&1
           )"
           dry_run_status=$?
           set -e
           printf '%s\n' "$dry_run_output"
           printf '%s\n' "$dry_run_output" > "$RUNNER_TEMP/supabase-deploy/db-push-dry-run.txt"
+          echo "dry-run exit code: ${dry_run_status}"
           if [ "$dry_run_status" -ne 0 ]; then
             echo "Supabase dry-run command failed; refusing to push"
             exit "$dry_run_status"
@@ -200,29 +257,95 @@ jobs:
           import re
           import sys
 
-          version = os.environ["INITIAL_MIGRATION_VERSION"]
-          expected = os.environ["INITIAL_MIGRATION_BASENAME"]
+          expected = os.environ["TARGET_MIGRATION_BASENAME"]
           text = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "db-push-dry-run.txt").read_text()
-          if version not in text:
-              print("Initial migration version missing from dry-run output; refusing to push")
-              sys.exit(1)
           pending = sorted(set(re.findall(r"(\d{14}_[A-Za-z0-9_]+\.sql)", text)))
-          unexpected = [name for name in pending if name != expected]
-          print(f"dry-run pending SQL files: {pending or [expected]}")
-          if unexpected:
-              print("Unexpected pending migrations in dry-run output; refusing to push")
+          print(f"dry-run pending SQL files: {pending}")
+          if len(pending) != 1 or pending[0] != expected:
+              print("Dry-run pending set is not exactly the confirmed target file")
               sys.exit(1)
-          print("Preflight dry-run recognized the expected initial migration")
+          print(f"Dry-run target verification PASS: {pending[0]}")
           PY
 
-      - name: Apply pending migrations to development database
+      - name: Reconfirm ledger is unchanged after dry-run
         run: |
           set -euo pipefail
           pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
           pw="${pw#"${pw%%[![:space:]]*}"}"
           pw="${pw%"${pw##*[![:space:]]}"}"
-          export SUPABASE_DB_PASSWORD="$pw"
-          supabase db push --linked
+          set +e
+          mid_output="$(supabase migration list --linked --password "$pw" 2>&1)"
+          mid_status=$?
+          set -e
+          printf '%s\n' "$mid_output"
+          printf '%s\n' "$mid_output" > "$RUNNER_TEMP/supabase-deploy/migration-list-after-dry-run.txt"
+          if [ "$mid_status" -ne 0 ]; then
+            echo "supabase migration list --linked failed after dry-run"
+            exit "$mid_status"
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import sys
+
+          version = os.environ["CONFIRM_MIGRATION_VERSION"]
+          before = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-before.txt").read_text()
+          after = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-after-dry-run.txt").read_text()
+
+          def parse_sets(text: str):
+              local = set()
+              remote = set()
+              for raw in text.splitlines():
+                  line = raw.replace("`", "")
+                  if "Local" in line and "Remote" in line:
+                      continue
+                  sep = "│" if "│" in line else ("|" if "|" in line else "")
+                  if not sep:
+                      continue
+                  if set(line.strip()) <= set("-|─│┼+ "):
+                      continue
+                  cols = [c.strip() for c in line.split(sep)]
+                  local_col = cols[0] if cols else ""
+                  remote_col = cols[1] if len(cols) > 1 else ""
+                  local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
+                  remote.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", remote_col))
+              return local, remote
+
+          def version_lines(text: str):
+              lines = []
+              for raw in text.splitlines():
+                  if re.search(r"(?<!\d)\d{14}(?!\d)", raw):
+                      lines.append(" ".join(raw.split()))
+              return lines
+
+          local, remote = parse_sets(after)
+          pending = sorted(local - remote)
+          remote_only = sorted(remote - local)
+          print(f"post-dry-run pending versions: {pending}")
+          if remote_only:
+              print("Remote-only divergence after dry-run; refusing to push")
+              sys.exit(1)
+          if version in remote or version not in local or len(pending) != 1 or pending[0] != version:
+              print("Target is no longer the single local-only pending migration after dry-run")
+              sys.exit(1)
+          if version_lines(before) != version_lines(after):
+              print("Dry-run changed migration ledger version rows; refusing to push")
+              print("BEFORE:")
+              print("\n".join(version_lines(before)))
+              print("AFTER DRY-RUN:")
+              print("\n".join(version_lines(after)))
+              sys.exit(1)
+          print("Pre-apply second ledger check PASS; remote ledger unchanged")
+          PY
+
+      - name: Apply the confirmed pending migration
+        run: |
+          set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          supabase db push --linked --password "$pw"
           echo "supabase db push --linked finished"
 
       - name: Migration list AFTER apply
@@ -231,9 +354,8 @@ jobs:
           pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
           pw="${pw#"${pw%%[![:space:]]*}"}"
           pw="${pw%"${pw##*[![:space:]]}"}"
-          export SUPABASE_DB_PASSWORD="$pw"
           set +e
-          after_output="$(supabase migration list --linked 2>&1)"
+          after_output="$(supabase migration list --linked --password "$pw" 2>&1)"
           after_status=$?
           set -e
           printf '%s\n' "$after_output"
@@ -245,14 +367,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import os
+          import re
           import sys
 
-          version = os.environ["INITIAL_MIGRATION_VERSION"]
+          version = os.environ["CONFIRM_MIGRATION_VERSION"]
           text = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-after.txt").read_text()
 
-          def parse(text: str):
-              local_present = False
-              remote_applied = False
+          def parse_sets(text: str):
+              local = set()
+              remote = set()
               for raw in text.splitlines():
                   line = raw.replace("`", "")
                   if "Local" in line and "Remote" in line:
@@ -265,17 +388,25 @@ jobs:
                   cols = [c.strip() for c in line.split(sep)]
                   local_col = cols[0] if cols else ""
                   remote_col = cols[1] if len(cols) > 1 else ""
-                  if version in local_col:
-                      local_present = True
-                  if version in remote_col:
-                      remote_applied = True
-              return local_present, remote_applied
+                  local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
+                  remote.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", remote_col))
+              return local, remote
 
-          local_present, remote_applied = parse(text)
-          print(f"initial migration local present AFTER: {local_present}")
-          print(f"initial migration remote applied AFTER: {remote_applied}")
-          if not local_present or not remote_applied:
-              print("Initial migration was not remote applied after db push")
+          local, remote = parse_sets(text)
+          pending = sorted(local - remote)
+          remote_only = sorted(remote - local)
+          print(f"AFTER local versions: {sorted(local)}")
+          print(f"AFTER remote versions: {sorted(remote)}")
+          print(f"AFTER pending versions: {pending}")
+          if remote_only:
+              print("Remote-only divergence after apply")
               sys.exit(1)
-          print("Initial migration applied to Supabase dev database.")
+          if version not in local or version not in remote:
+              print("Confirmed migration is not local+remote after apply")
+              sys.exit(1)
+          if pending:
+              print(f"Expected pending count 0 after apply, found {pending}")
+              sys.exit(1)
+          print("Post-apply ledger verification PASS")
+          print("Pending count 0 PASS")
           PY
