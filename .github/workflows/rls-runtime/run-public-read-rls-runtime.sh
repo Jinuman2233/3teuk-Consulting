@@ -157,10 +157,10 @@ BEGIN
   END LOOP;
 
   SELECT count(*) INTO public_grant_count
-  FROM information_schema.role_table_grants
-  WHERE table_schema = 'public'
-    AND grantee = 'PUBLIC'
-    AND table_name = ANY (target_tables);
+  FROM information_schema.role_table_grants g
+  WHERE g.table_schema = 'public'
+    AND g.grantee = 'PUBLIC'
+    AND g.table_name = ANY (target_tables);
   IF public_grant_count <> 0 THEN
     RAISE EXCEPTION 'pre-RLS: PUBLIC has % direct table privileges', public_grant_count;
   END IF;
