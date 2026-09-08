@@ -1,78 +1,24 @@
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createSupabaseReadClient } from "../supabase/read-client";
 import {
   ADMISSION_PROGRAM_COLUMNS,
   ADMISSION_PROGRAMS_TABLE,
   UNIVERSITIES_TABLE,
   UNIVERSITY_COLUMNS,
 } from "./columns";
-import { AdmissionsQueryError } from "./errors";
+import {
+  getClient,
+  requireAcademicYear,
+  requireNonEmptyString,
+  requireUniversityId,
+  throwIfQueryError,
+} from "./query";
 import type {
   AdmissionProgramDetail,
   AdmissionProgramRow,
   UniversityRow,
 } from "./types";
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function assertServerRuntime(): void {
-  if (typeof document !== "undefined") {
-    throw new Error("Admissions read queries must run on the server");
-  }
-}
-
-function requireNonEmptyString(value: string, name: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new AdmissionsQueryError(
-      "INVALID_ARGUMENT",
-      `${name} must be a non-empty string`,
-    );
-  }
-  return trimmed;
-}
-
-function requireUniversityId(universityId: string): string {
-  const id = requireNonEmptyString(universityId, "universityId");
-  if (!UUID_RE.test(id)) {
-    throw new AdmissionsQueryError(
-      "INVALID_ARGUMENT",
-      "universityId must be a UUID",
-    );
-  }
-  return id;
-}
-
-function requireAcademicYear(academicYear: number): number {
-  if (!Number.isInteger(academicYear)) {
-    throw new AdmissionsQueryError(
-      "INVALID_ARGUMENT",
-      "academicYear must be an integer",
-    );
-  }
-  return academicYear;
-}
-
-function throwIfQueryError(
-  error: { message: string } | null,
-  context: string,
-): void {
-  if (error) {
-    throw new AdmissionsQueryError(
-      "QUERY_FAILED",
-      `${context}: ${error.message}`,
-      { cause: error },
-    );
-  }
-}
-
-function getClient(client?: SupabaseClient): SupabaseClient {
-  assertServerRuntime();
-  return client ?? createSupabaseReadClient();
-}
 
 export async function getUniversities(
   client?: SupabaseClient,
