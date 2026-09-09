@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "admissions:smoke": "node scripts/admissions-read-smoke.mjs"
+    "admissions:smoke": "node scripts/admissions-read-smoke.mjs",
+    "test:admission-detail:integrity": "node --conditions=react-server --import tsx --test tests/admissions/admission-detail-read-model.integrity.test.ts",
+    "test:admission-detail:hosted": "node --conditions=react-server --import tsx --env-file=.env.local --test tests/admissions/admission-detail-read-model.hosted.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.115.0",
@@ -24,6 +26,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.2",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }
