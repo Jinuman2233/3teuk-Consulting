@@ -125,17 +125,6 @@ function ScheduleArticle({
   );
 }
 
-function LoadError() {
-  return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-12">
-      <h1 className="text-2xl font-semibold tracking-tight">전형 상세</h1>
-      <p className="text-base leading-7 text-zinc-700 dark:text-zinc-300">
-        전형 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.
-      </p>
-    </main>
-  );
-}
-
 export default async function AdmissionDetailPage({
   params,
 }: PageProps<"/universities/[slug]/admissions/[academicYear]/[admissionSlug]">) {
@@ -146,17 +135,11 @@ export default async function AdmissionDetailPage({
     notFound();
   }
 
-  let detail;
-  try {
-    detail = await getAdmissionProgramDetailReadModel(
-      slug,
-      academicYear,
-      admissionSlug,
-    );
-  } catch (error) {
-    console.error("Failed to load admission program detail", error);
-    return <LoadError />;
-  }
+  const detail = await getAdmissionProgramDetailReadModel(
+    slug,
+    academicYear,
+    admissionSlug,
+  );
 
   if (!detail) {
     notFound();
