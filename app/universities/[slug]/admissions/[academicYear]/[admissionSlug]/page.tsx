@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { CitationDisclosure } from "@/components/admissions/CitationDisclosure";
 import { getAdmissionProgramDetailReadModel } from "@/lib/admissions";
 import type {
-  AdmissionScheduleRow,
-  AdmissionSectionRow,
+  ScheduleWithProvenance,
+  SectionWithProvenance,
+  SourceDocumentSummary,
 } from "@/lib/admissions";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +36,9 @@ function verificationStatusLabel(status: string): string {
   }
 }
 
-function scheduleWindowLabel(schedule: AdmissionScheduleRow): string | null {
+function scheduleWindowLabel(
+  schedule: ScheduleWithProvenance["schedule"],
+): string | null {
   if (schedule.temporal_precision === "date") {
     const start = schedule.start_date;
     const end = schedule.end_date;
@@ -52,7 +56,15 @@ function scheduleWindowLabel(schedule: AdmissionScheduleRow): string | null {
   return start ?? end;
 }
 
-function SectionArticle({ section }: { section: AdmissionSectionRow }) {
+function SectionArticle({
+  item,
+  sourcesById,
+}: {
+  item: SectionWithProvenance;
+  sourcesById: Record<string, SourceDocumentSummary>;
+}) {
+  const { section } = item;
+
   return (
     <article className="flex flex-col gap-2 rounded-lg border border-zinc-200 px-4 py-4 dark:border-zinc-800">
       <h3 className="text-base font-medium leading-7">{section.title}</h3>
@@ -64,11 +76,22 @@ function SectionArticle({ section }: { section: AdmissionSectionRow }) {
           {section.applicability_text}
         </p>
       ) : null}
+      <CitationDisclosure
+        citations={item.citations}
+        sourcesById={sourcesById}
+      />
     </article>
   );
 }
 
-function ScheduleArticle({ schedule }: { schedule: AdmissionScheduleRow }) {
+function ScheduleArticle({
+  item,
+  sourcesById,
+}: {
+  item: ScheduleWithProvenance;
+  sourcesById: Record<string, SourceDocumentSummary>;
+}) {
+  const { schedule } = item;
   const windowLabel = scheduleWindowLabel(schedule);
 
   return (
@@ -94,6 +117,10 @@ function ScheduleArticle({ schedule }: { schedule: AdmissionScheduleRow }) {
           {schedule.description}
         </p>
       ) : null}
+      <CitationDisclosure
+        citations={item.citations}
+        sourcesById={sourcesById}
+      />
     </article>
   );
 }
@@ -170,7 +197,10 @@ export default async function AdmissionDetailPage({
           <ul className="flex flex-col gap-3">
             {detail.sections.map((item) => (
               <li key={item.section.id}>
-                <SectionArticle section={item.section} />
+                <SectionArticle
+                  item={item}
+                  sourcesById={detail.sourcesById}
+                />
               </li>
             ))}
           </ul>
@@ -189,7 +219,10 @@ export default async function AdmissionDetailPage({
           <ul className="flex flex-col gap-3">
             {detail.schedules.map((item) => (
               <li key={item.schedule.id}>
-                <ScheduleArticle schedule={item.schedule} />
+                <ScheduleArticle
+                  item={item}
+                  sourcesById={detail.sourcesById}
+                />
               </li>
             ))}
           </ul>
