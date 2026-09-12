@@ -1,0 +1,482 @@
+name: Test Public Read RLS Supabase Dry Run
+
+on:
+  workflow_dispatch:
+  # GitHub only lists workflow_dispatch from the default branch.
+  # This temporary proof branch is not merged to main, so a
+  # branch-scoped push trigger is required to actually run here.
+  push:
+    branches:
+      - test/public-read-rls-supabase-dry-run
+
+concurrency:
+  group: public-read-rls-supabase-dry-run
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# Proof-only linked dry-run for the public-read RLS migration.
+# Actual db push / apply / repair / reset / pull / migration up are forbidden.
+# Do not merge this workflow to main.
+
+jobs:
+  hosted-dry-run:
+    name: Hosted Supabase public-read RLS dry-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      EXPECTED_PROJECT_REF: styubtgvdjceulfurskb
+      INITIAL_MIGRATION_VERSION: "20260825155343"
+      KU_MIGRATION_VERSION: "20260905160000"
+      RLS_MIGRATION_VERSION: "20260907081000"
+      INITIAL_MIGRATION_FILE: supabase/migrations/20260825155343_initial_schema.sql
+      KU_MIGRATION_FILE: supabase/migrations/20260905160000_load_ku_2027_reentry.sql
+      RLS_MIGRATION_FILE: supabase/migrations/20260907081000_public_read_rls.sql
+      INITIAL_MIGRATION_BASENAME: 20260825155343_initial_schema.sql
+      KU_MIGRATION_BASENAME: 20260905160000_load_ku_2027_reentry.sql
+      RLS_MIGRATION_BASENAME: 20260907081000_public_read_rls.sql
+      EXPECTED_KU_SHA256: a1214d772731aa53c0502f57086927fedc925b0b2f7d20ccce82c45b7c18c116
+      EXPECTED_RLS_SHA256: 3942e48ced00c46b58fe7fb6916d001ece5a89493a3514ca980ac78c88ecfc26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Workflow self-check
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(".github/workflows/test-public-read-rls-supabase-dry-run.yml")
+          text = path.read_text()
+
+          if "styubtgvdjceulfurskb" not in text:
+              print("missing expected project ref guard")
+              sys.exit(1)
+          if "version: 2.113.0" not in text:
+              print("missing pinned CLI 2.113.0")
+              sys.exit(1)
+          if "20260907081000" not in text:
+              print("missing hard target migration version")
+              sys.exit(1)
+          if "3942e48ced00c46b58fe7fb6916d001ece5a89493a3514ca980ac78c88ecfc26" not in text:
+              print("missing hard target RLS SHA")
+              sys.exit(1)
+          setx = "set " + "-x"
+          if setx in text:
+              print("debug tracing is forbidden")
+              sys.exit(1)
+
+          echo_secret = re.search(
+              r"echo\s+.*\$\{?(SUPABASE_ACCESS_TOKEN|SUPABASE_DB_PASSWORD|SUPABASE_PROJECT_ID)",
+              text,
+          )
+          if echo_secret:
+              print("secret echo is forbidden")
+              sys.exit(1)
+
+          push_invocations = []
+          for i, line in enumerate(text.splitlines(), 1):
+              if re.search(r"supabase\s+db\s+push", line):
+                  push_invocations.append((i, line.strip()))
+          if not push_invocations:
+              print("expected exactly one dry-run db push invocation")
+              sys.exit(1)
+          actual_push = [item for item in push_invocations if "--dry-run" not in item[1]]
+          if actual_push:
+              print("actual db push invocation without --dry-run:")
+              for i, line in actual_push:
+                  print(f"  {i}: {line}")
+              sys.exit(1)
+          dry_run_invocations = [
+              item for item in push_invocations
+              if "--dry-run" in item[1] and item[1].lstrip().startswith("supabase db push")
+          ]
+          if len(dry_run_invocations) != 1:
+              print(f"expected exactly one executable dry-run command, found {len(dry_run_invocations)}")
+              print(dry_run_invocations)
+              sys.exit(1)
+
+          forbidden = [
+              "supabase " + "migration repair",
+              "supabase " + "migration up",
+              "supabase " + "db reset",
+              "supabase " + "db pull",
+              "--include" + "-all",
+              "--include" + "-seed",
+              "--include" + "-roles",
+          ]
+          for needle in forbidden:
+              if needle in text:
+                  print(f"forbidden string present: {needle}")
+                  sys.exit(1)
+
+          print("workflow self-check PASS")
+          print("actual db push invocation count = 0")
+          print("dry-run executable invocation count = 1")
+          PY
+
+      - name: Confirm secrets and expected project ref
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
+            echo "required access token secret is not set"
+            exit 1
+          fi
+          if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
+            echo "required database password secret is not set"
+            exit 1
+          fi
+          if [ -z "${SUPABASE_PROJECT_ID:-}" ]; then
+            echo "required project id secret is not set"
+            exit 1
+          fi
+          if [ "$SUPABASE_PROJECT_ID" != "$EXPECTED_PROJECT_REF" ]; then
+            echo "Project reference mismatch"
+            exit 1
+          fi
+          echo "Project guard PASS"
+
+      - name: Confirm local migration inventory
+        run: |
+          set -euo pipefail
+          mapfile -t migration_files < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort)
+          if [ "${#migration_files[@]}" -ne 3 ]; then
+            echo "Expected exactly three local SQL migrations, found ${#migration_files[@]}"
+            printf '%s\n' "${migration_files[@]}"
+            exit 1
+          fi
+          if [ "${migration_files[0]}" != "$INITIAL_MIGRATION_FILE" ]; then
+            echo "Unexpected first migration: ${migration_files[0]}"
+            exit 1
+          fi
+          if [ "${migration_files[1]}" != "$KU_MIGRATION_FILE" ]; then
+            echo "Unexpected second migration: ${migration_files[1]}"
+            exit 1
+          fi
+          if [ "${migration_files[2]}" != "$RLS_MIGRATION_FILE" ]; then
+            echo "Unexpected third migration: ${migration_files[2]}"
+            exit 1
+          fi
+          echo "Local migrations:"
+          printf '%s\n' "${migration_files[@]}"
+
+      - name: Confirm production migration SHA-256
+        run: |
+          set -euo pipefail
+          ku_sha="$(sha256sum "$KU_MIGRATION_FILE" | awk '{print $1}')"
+          rls_sha="$(sha256sum "$RLS_MIGRATION_FILE" | awk '{print $1}')"
+          echo "expected KU SHA-256:  $EXPECTED_KU_SHA256"
+          echo "actual KU SHA-256:    $ku_sha"
+          echo "expected RLS SHA-256: $EXPECTED_RLS_SHA256"
+          echo "actual RLS SHA-256:   $rls_sha"
+          if [ "$ku_sha" != "$EXPECTED_KU_SHA256" ]; then
+            echo "KU migration SHA-256 mismatch"
+            exit 1
+          fi
+          if [ "$rls_sha" != "$EXPECTED_RLS_SHA256" ]; then
+            echo "RLS migration SHA-256 mismatch"
+            exit 1
+          fi
+          echo "Migration SHA guard PASS"
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v3
+        with:
+          version: 2.113.0
+
+      - name: Print Supabase CLI version
+        run: supabase --version
+
+      - name: Ephemeral supabase init if needed
+        run: |
+          set -euo pipefail
+          if [ -f supabase/config.toml ]; then
+            echo "supabase/config.toml already present; skipping init"
+          else
+            supabase init
+            echo "supabase init finished in CI working copy only"
+          fi
+          ku_sha="$(sha256sum "$KU_MIGRATION_FILE" | awk '{print $1}')"
+          rls_sha="$(sha256sum "$RLS_MIGRATION_FILE" | awk '{print $1}')"
+          if [ "$ku_sha" != "$EXPECTED_KU_SHA256" ]; then
+            echo "KU migration SHA-256 changed after init"
+            exit 1
+          fi
+          if [ "$rls_sha" != "$EXPECTED_RLS_SHA256" ]; then
+            echo "RLS migration SHA-256 changed after init"
+            exit 1
+          fi
+
+      - name: Link hosted development project
+        run: |
+          set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          if [ -z "$pw" ]; then
+            echo "database password secret is empty after trimming"
+            exit 1
+          fi
+          supabase link --project-ref "$EXPECTED_PROJECT_REF" --password "$pw"
+          echo "supabase link finished"
+
+      - name: Migration list BEFORE dry-run
+        run: |
+          set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          mkdir -p "$RUNNER_TEMP/rls-dry-run"
+          set +e
+          before_output="$(supabase migration list --linked --password "$pw" 2>&1)"
+          before_status=$?
+          set -e
+          printf '%s\n' "$before_output"
+          printf '%s\n' "$before_output" > "$RUNNER_TEMP/rls-dry-run/migration-list-before.txt"
+          if [ "$before_status" -ne 0 ]; then
+            echo "supabase migration list --linked failed before dry-run"
+            exit "$before_status"
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import sys
+
+          initial = os.environ["INITIAL_MIGRATION_VERSION"]
+          ku = os.environ["KU_MIGRATION_VERSION"]
+          rls = os.environ["RLS_MIGRATION_VERSION"]
+          text = Path(os.environ["RUNNER_TEMP"], "rls-dry-run", "migration-list-before.txt").read_text()
+
+          def parse_sets(text: str):
+              local = set()
+              remote = set()
+              decorative = set("-|─│┼+ ├┤┬┴┌┐└┘═║╔╗╚╝╠╣╦╩╬")
+              for raw in text.splitlines():
+                  line = raw.replace("`", "")
+                  if "Local" in line and "Remote" in line:
+                      continue
+                  sep = "│" if "│" in line else ("|" if "|" in line else "")
+                  if not sep:
+                      continue
+                  if set(line.strip()) <= decorative:
+                      continue
+                  cols = [c.strip() for c in line.split(sep)]
+                  if cols and cols[0] == "" and len(cols) >= 3:
+                      cols = cols[1:]
+                  if cols and cols[-1] == "" and len(cols) >= 3:
+                      cols = cols[:-1]
+                  local_col = cols[0] if cols else ""
+                  remote_col = cols[1] if len(cols) > 1 else ""
+                  local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
+                  remote.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", remote_col))
+              return local, remote
+
+          local, remote = parse_sets(text)
+          pending = sorted(local - remote)
+          remote_only = sorted(remote - local)
+          print(f"BEFORE local versions: {sorted(local)}")
+          print(f"BEFORE remote versions: {sorted(remote)}")
+          print(f"BEFORE pending versions: {pending}")
+          print(f"BEFORE remote-only versions: {remote_only}")
+
+          expected_local = {initial, ku, rls}
+          expected_remote = {initial, ku}
+          if local != expected_local:
+              print(f"BEFORE local set mismatch; expected {sorted(expected_local)}")
+              sys.exit(1)
+          if remote != expected_remote:
+              print(f"BEFORE remote set mismatch; expected {sorted(expected_remote)}")
+              sys.exit(1)
+          if initial not in local or initial not in remote:
+              print("20260825155343 must be local + remote")
+              sys.exit(1)
+          if ku not in local or ku not in remote:
+              print("20260905160000 must be local + remote")
+              sys.exit(1)
+          if rls not in local or rls in remote:
+              print("20260907081000 must be local only")
+              sys.exit(1)
+          if remote_only:
+              print("Remote-only migration divergence; refusing dry-run")
+              sys.exit(1)
+          if len(pending) != 1 or pending[0] != rls:
+              print("Pending set is not exactly 20260907081000; refusing dry-run")
+              sys.exit(1)
+          print("BEFORE ledger PASS: initial remote, KU remote, RLS local-only")
+          print("pending exactly one: 20260907081000")
+          print("remote-only: 0")
+          PY
+
+      - name: Mandatory linked dry-run
+        run: |
+          set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          set +e
+          dry_run_output="$(
+            supabase db push --dry-run --linked --password "$pw" 2>&1
+          )"
+          dry_run_status=$?
+          set -e
+          printf '%s\n' "$dry_run_output"
+          printf '%s\n' "$dry_run_output" > "$RUNNER_TEMP/rls-dry-run/db-push-dry-run.txt"
+          echo "dry-run exit code: ${dry_run_status}"
+          if [ "$dry_run_status" -ne 0 ]; then
+            echo "Supabase dry-run command failed"
+            exit "$dry_run_status"
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import sys
+
+          expected = os.environ["RLS_MIGRATION_BASENAME"]
+          initial = os.environ["INITIAL_MIGRATION_BASENAME"]
+          ku = os.environ["KU_MIGRATION_BASENAME"]
+          text = Path(os.environ["RUNNER_TEMP"], "rls-dry-run", "db-push-dry-run.txt").read_text()
+          pending = sorted(set(re.findall(r"(\d{14}_[A-Za-z0-9_]+\.sql)", text)))
+          print(f"dry-run unique SQL filenames: {pending}")
+          print(f"dry-run unique file count: {len(pending)}")
+          if initial in pending:
+              print("Initial schema must not appear in dry-run output")
+              sys.exit(1)
+          if ku in pending:
+              print("KU migration must not appear in dry-run output")
+              sys.exit(1)
+          if len(pending) == 0:
+              print("Dry-run reported 0 migration files")
+              sys.exit(1)
+          if len(pending) != 1 or pending[0] != expected:
+              print("Dry-run pending set is not exactly 20260907081000_public_read_rls.sql")
+              sys.exit(1)
+          print(f"Dry-run target verification PASS: {pending[0]}")
+          PY
+
+      - name: Migration list AFTER dry-run
+        run: |
+          set -euo pipefail
+          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
+          pw="${pw#"${pw%%[![:space:]]*}"}"
+          pw="${pw%"${pw##*[![:space:]]}"}"
+          set +e
+          after_output="$(supabase migration list --linked --password "$pw" 2>&1)"
+          after_status=$?
+          set -e
+          printf '%s\n' "$after_output"
+          printf '%s\n' "$after_output" > "$RUNNER_TEMP/rls-dry-run/migration-list-after.txt"
+          if [ "$after_status" -ne 0 ]; then
+            echo "supabase migration list --linked failed after dry-run"
+            exit "$after_status"
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import sys
+
+          initial = os.environ["INITIAL_MIGRATION_VERSION"]
+          ku = os.environ["KU_MIGRATION_VERSION"]
+          rls = os.environ["RLS_MIGRATION_VERSION"]
+          before = Path(os.environ["RUNNER_TEMP"], "rls-dry-run", "migration-list-before.txt").read_text()
+          after = Path(os.environ["RUNNER_TEMP"], "rls-dry-run", "migration-list-after.txt").read_text()
+
+          def parse_sets(text: str):
+              local = set()
+              remote = set()
+              decorative = set("-|─│┼+ ├┤┬┴┌┐└┘═║╔╗╚╝╠╣╦╩╬")
+              for raw in text.splitlines():
+                  line = raw.replace("`", "")
+                  if "Local" in line and "Remote" in line:
+                      continue
+                  sep = "│" if "│" in line else ("|" if "|" in line else "")
+                  if not sep:
+                      continue
+                  if set(line.strip()) <= decorative:
+                      continue
+                  cols = [c.strip() for c in line.split(sep)]
+                  if cols and cols[0] == "" and len(cols) >= 3:
+                      cols = cols[1:]
+                  if cols and cols[-1] == "" and len(cols) >= 3:
+                      cols = cols[:-1]
+                  local_col = cols[0] if cols else ""
+                  remote_col = cols[1] if len(cols) > 1 else ""
+                  local.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", local_col))
+                  remote.update(re.findall(r"(?<!\d)(\d{14})(?!\d)", remote_col))
+              return local, remote
+
+          def version_lines(text: str):
+              lines = []
+              for raw in text.splitlines():
+                  if re.search(r"(?<!\d)\d{14}(?!\d)", raw):
+                      lines.append(" ".join(raw.split()))
+              return lines
+
+          before_local, before_remote = parse_sets(before)
+          after_local, after_remote = parse_sets(after)
+          pending = sorted(after_local - after_remote)
+          remote_only = sorted(after_remote - after_local)
+          print(f"AFTER local versions: {sorted(after_local)}")
+          print(f"AFTER remote versions: {sorted(after_remote)}")
+          print(f"AFTER pending versions: {pending}")
+          print(f"AFTER remote-only versions: {remote_only}")
+
+          if after_local != before_local or after_remote != before_remote:
+              print("BEFORE/AFTER logical ledger sets differ")
+              sys.exit(1)
+          if version_lines(before) != version_lines(after):
+              print("Dry-run changed migration ledger version rows")
+              print("BEFORE:")
+              print("\n".join(version_lines(before)))
+              print("AFTER:")
+              print("\n".join(version_lines(after)))
+              sys.exit(1)
+          if remote_only:
+              print("Remote-only divergence after dry-run")
+              sys.exit(1)
+          if rls in after_remote:
+              print("20260907081000 became remote after dry-run; refusing")
+              sys.exit(1)
+          if pending != [rls]:
+              print("AFTER pending is not exactly 20260907081000")
+              sys.exit(1)
+          if initial not in after_local or initial not in after_remote:
+              print("20260825155343 is no longer local+remote")
+              sys.exit(1)
+          if ku not in after_local or ku not in after_remote:
+              print("20260905160000 is no longer local+remote")
+              sys.exit(1)
+          print("AFTER ledger unchanged PASS")
+          print("20260907081000 still local-only")
+          print("remote migration ledger unchanged")
+          PY
+
+      - name: Confirm production SQL SHA unchanged
+        run: |
+          set -euo pipefail
+          ku_sha="$(sha256sum "$KU_MIGRATION_FILE" | awk '{print $1}')"
+          rls_sha="$(sha256sum "$RLS_MIGRATION_FILE" | awk '{print $1}')"
+          echo "KU SHA-256 after=${ku_sha}"
+          echo "RLS SHA-256 after=${rls_sha}"
+          if [ "$ku_sha" != "$EXPECTED_KU_SHA256" ]; then
+            echo "KU migration SHA-256 changed during dry-run workflow"
+            exit 1
+          fi
+          if [ "$rls_sha" != "$EXPECTED_RLS_SHA256" ]; then
+            echo "RLS migration SHA-256 changed during dry-run workflow"
+            exit 1
+          fi
+          echo "production SQL SHA unchanged PASS"
+          echo "A. Hosted Supabase dry-run PASS; ready for controlled RLS deployment"
+          echo "NOT PROVEN: actual hosted RLS apply, hosted anon/auth runtime after apply, CLI failure rollback semantics"
