@@ -7,12 +7,8 @@ on:
         description: Type the exact target Supabase development project ref. Must match the expected development project.
         required: true
         type: string
-      confirm_migration_version:
-        description: Type the exact 14-digit version of the single pending migration to apply.
-        required: true
-        type: string
-      confirm_migration_sha256:
-        description: Type the 64-character hex SHA-256 of that local pending migration SQL file.
+      expected_pending_manifest:
+        description: "Comma-separated version=sha256 pairs expected to be pending. Example: 20260912123000=<64hex>,20260912123100=<64hex>"
         required: true
         type: string
       confirm_apply:
@@ -27,15 +23,17 @@ concurrency:
 permissions:
   contents: read
 
-# Manual apply of exactly one pending migration to the development database.
+# Manual apply of an operator-declared pending migration set to the development database.
+# The observed pending set must exactly equal the versions in expected_pending_manifest.
+# Each manifest pair also confirms the local migration file SHA-256.
 # This workflow may only run from main.
 # PostgreSQL explicit-transaction rollback probe: PASS (separate runtime test).
 # Supabase CLI failure rollback semantics: NOT PROVEN.
-# Do not assume this CLI run wraps the SQL file in one transaction.
+# Do not assume this CLI run wraps the SQL files in one transaction.
 
 jobs:
   deploy-dev-migrations:
-    name: Deploy one pending migration to development
+    name: Deploy confirmed pending migrations to development
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -43,8 +41,7 @@ jobs:
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
       CONFIRM_PROJECT_REF: ${{ inputs.confirm_project_ref }}
-      CONFIRM_MIGRATION_VERSION: ${{ inputs.confirm_migration_version }}
-      CONFIRM_MIGRATION_SHA256: ${{ inputs.confirm_migration_sha256 }}
+      EXPECTED_PENDING_MANIFEST: ${{ inputs.expected_pending_manifest }}
       CONFIRM_APPLY: ${{ inputs.confirm_apply }}
       EXPECTED_PROJECT_REF: styubtgvdjceulfurskb
       EXPECTED_CONFIRM_APPLY: APPLY
@@ -84,7 +81,7 @@ jobs:
           fi
           echo "Required secrets are set"
 
-      - name: Confirm project, version, SHA format, and APPLY
+      - name: Confirm project, expected pending manifest, and APPLY
         run: |
           set -euo pipefail
           if [ "$CONFIRM_PROJECT_REF" != "$EXPECTED_PROJECT_REF" ]; then
@@ -99,60 +96,148 @@ jobs:
             echo "confirm_apply was not APPLY"
             exit 1
           fi
-          if [[ ! "$CONFIRM_MIGRATION_VERSION" =~ ^[0-9]{14}$ ]]; then
-            echo "confirm_migration_version must be exactly 14 digits"
-            exit 1
-          fi
-          sha_input="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]')"
-          if [[ ! "$sha_input" =~ ^[0-9a-fA-F]{64}$ ]]; then
-            echo "confirm_migration_sha256 must be exactly 64 hexadecimal characters"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          raw = os.environ.get("EXPECTED_PENDING_MANIFEST", "")
+          parts = raw.split(",")
+          pairs = []
+          seen_versions = set()
+          seen_pairs = set()
+          for index, part in enumerate(parts):
+              item = part.strip()
+              if item == "":
+                  print(f"expected_pending_manifest contains an empty item at position {index + 1}")
+                  sys.exit(1)
+              if item.count("=") != 1:
+                  print(
+                      "malformed expected_pending_manifest item "
+                      f"{item!r} (expected <14-digit-version>=<64-hex-sha256>)"
+                  )
+                  sys.exit(1)
+              version_raw, sha_raw = item.split("=", 1)
+              version = version_raw.strip()
+              sha_input = sha_raw.strip()
+              if re.fullmatch(r"[0-9]{14}", version) is None:
+                  print(
+                      "malformed migration version "
+                      f"{version!r} (each version must be exactly 14 digits)"
+                  )
+                  sys.exit(1)
+              if re.fullmatch(r"[0-9a-fA-F]{64}", sha_input) is None:
+                  print(
+                      "malformed migration SHA-256 "
+                      f"{sha_input!r} (each SHA must be exactly 64 hexadecimal characters)"
+                  )
+                  sys.exit(1)
+              sha = sha_input.lower()
+              pair = (version, sha)
+              if version in seen_versions:
+                  print(f"duplicate expected pending version: {version}")
+                  sys.exit(1)
+              if pair in seen_pairs:
+                  print(f"duplicate expected pending pair: {version}={sha}")
+                  sys.exit(1)
+              seen_versions.add(version)
+              seen_pairs.add(pair)
+              pairs.append(pair)
+          if not pairs:
+              print("expected_pending_manifest produced no pairs")
+              sys.exit(1)
+          pairs.sort(key=lambda item: item[0])
+          normalized_versions = ",".join(version for version, _sha in pairs)
+          normalized_manifest = ",".join(f"{version}={sha}" for version, sha in pairs)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"EXPECTED_PENDING_VERSIONS_NORMALIZED={normalized_versions}\n")
+              handle.write(f"EXPECTED_PENDING_MANIFEST_NORMALIZED={normalized_manifest}\n")
+          print(f"Normalized expected pending versions: {normalized_versions}")
+          print(f"Normalized expected pending manifest: {normalized_manifest}")
+          PY
           echo "Project guard PASS"
           echo "APPLY confirmation PASS"
-          echo "Migration version guard PASS: $CONFIRM_MIGRATION_VERSION"
-          echo "SHA-256 format guard PASS"
+          echo "Expected pending manifest guard PASS"
 
-      - name: Resolve the confirmed local migration file
+      - name: Resolve the confirmed local migration files
         id: resolve_target
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          matches=()
-          while IFS= read -r -d '' path; do
-            matches+=("$path")
-          done < <(find supabase/migrations -maxdepth 1 -type f -name "${CONFIRM_MIGRATION_VERSION}_*.sql" -print0 | sort -z)
-          if [ "${#matches[@]}" -eq 0 ]; then
-            echo "No local migration starts with ${CONFIRM_MIGRATION_VERSION}_"
-            exit 1
-          fi
-          if [ "${#matches[@]}" -ne 1 ]; then
-            echo "Expected exactly one local file for version ${CONFIRM_MIGRATION_VERSION}, found ${#matches[@]}"
-            printf '%s\n' "${matches[@]}"
-            exit 1
-          fi
-          target="${matches[0]}"
-          target_basename="$(basename "$target")"
-          echo "TARGET_MIGRATION_FILE=$target" >> "$GITHUB_ENV"
-          echo "TARGET_MIGRATION_BASENAME=$target_basename" >> "$GITHUB_ENV"
-          echo "Resolved target: $target"
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import sys
 
-      - name: Confirm target migration SHA-256
+          versions = os.environ["EXPECTED_PENDING_VERSIONS_NORMALIZED"].split(",")
+          operator_pairs = {}
+          for item in os.environ["EXPECTED_PENDING_MANIFEST_NORMALIZED"].split(","):
+              version, sha = item.split("=", 1)
+              operator_pairs[version] = sha
+          if versions != sorted(operator_pairs):
+              print("Derived expected versions do not match the operator manifest")
+              sys.exit(1)
+          migrations_dir = Path("supabase/migrations")
+          files = []
+          basenames = []
+          sha_lines = []
+          mismatches = []
+          for version in versions:
+              matches = sorted(migrations_dir.glob(f"{version}_*.sql"))
+              files_only = [path for path in matches if path.is_file()]
+              if len(files_only) == 0:
+                  print(f"No local migration starts with {version}_")
+                  sys.exit(1)
+              if len(files_only) != 1:
+                  print(
+                      f"Expected exactly one local file for version {version}, "
+                      f"found {len(files_only)}"
+                  )
+                  for path in files_only:
+                      print(path)
+                  sys.exit(1)
+              target = files_only[0]
+              if target != Path("supabase/migrations") / target.name:
+                  print(f"Resolved path is not a plain repository migration path: {target}")
+                  sys.exit(1)
+              digest = hashlib.sha256(target.read_bytes()).hexdigest()
+              expected_sha = operator_pairs[version]
+              print(f"version: {version}")
+              print(f"file: {target}")
+              print(f"expected sha: {expected_sha}")
+              print(f"actual sha:   {digest}")
+              if digest != expected_sha:
+                  mismatches.append(version)
+              files.append(str(target))
+              basenames.append(target.name)
+              sha_lines.append(f"{version} {target.name} {digest}")
+          if mismatches:
+              print(
+                  "Operator manifest SHA-256 does not match local file: "
+                  + ",".join(mismatches)
+              )
+              sys.exit(1)
+
+          env_path = Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as handle:
+              handle.write("TARGET_MIGRATION_FILES=" + ",".join(files) + "\n")
+              handle.write("TARGET_MIGRATION_BASENAMES=" + ",".join(basenames) + "\n")
+
+          manifest = Path(os.environ["RUNNER_TEMP"], "supabase-deploy")
+          manifest.mkdir(parents=True, exist_ok=True)
+          (manifest / "target-migration-sha256.txt").write_text(
+              "\n".join(sha_lines) + "\n",
+              encoding="utf-8",
+          )
+          print("Local file resolve PASS")
+          print("Operator SHA-256 confirmation PASS")
+          PY
+
+      - name: Record resolved migration SHA-256 values
         run: |
           set -euo pipefail
-          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
-          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "confirm_migration_sha256 must be exactly 64 hexadecimal characters"
-            exit 1
-          fi
-          actual="$(sha256sum "$TARGET_MIGRATION_FILE" | awk '{print $1}')"
-          echo "expected SHA-256: $expected"
-          echo "actual SHA-256:   $actual"
-          if [ "$actual" != "$expected" ]; then
-            echo "Target migration SHA-256 does not match confirm_migration_sha256"
-            exit 1
-          fi
-          echo "SHA-256 confirmation PASS"
+          echo "Recorded SHA-256 values for the operator-declared pending set:"
+          cat "$RUNNER_TEMP/supabase-deploy/target-migration-sha256.txt"
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v3
@@ -171,16 +256,50 @@ jobs:
             supabase init
             echo "supabase init finished in CI working copy only"
           fi
-          if [ ! -f "$TARGET_MIGRATION_FILE" ]; then
-            echo "Target migration missing after init"
-            exit 1
-          fi
-          expected="$(printf '%s' "$CONFIRM_MIGRATION_SHA256" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
-          actual="$(sha256sum "$TARGET_MIGRATION_FILE" | awk '{print $1}')"
-          if [ "$actual" != "$expected" ]; then
-            echo "Target migration SHA-256 changed after init"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import sys
+
+          recorded = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "target-migration-sha256.txt")
+          if not recorded.is_file():
+              print("Target SHA-256 manifest missing after init")
+              sys.exit(1)
+          operator_pairs = {}
+          for item in os.environ["EXPECTED_PENDING_MANIFEST_NORMALIZED"].split(","):
+              version, sha = item.split("=", 1)
+              operator_pairs[version] = sha
+          for raw in recorded.read_text(encoding="utf-8").splitlines():
+              line = raw.strip()
+              if not line:
+                  continue
+              version, basename, recorded_sha = line.split(" ", 2)
+              target = Path("supabase/migrations") / basename
+              if not target.is_file():
+                  print(f"Target migration missing after init: {target}")
+                  sys.exit(1)
+              if not target.name.startswith(f"{version}_"):
+                  print(f"Target basename {basename} does not start with {version}_")
+                  sys.exit(1)
+              operator_sha = operator_pairs.get(version)
+              if operator_sha is None:
+                  print(f"Recorded version {version} is not in the operator manifest")
+                  sys.exit(1)
+              actual = hashlib.sha256(target.read_bytes()).hexdigest()
+              print(f"version: {version}")
+              print(f"operator sha: {operator_sha}")
+              print(f"recorded sha: {recorded_sha}")
+              print(f"actual sha:   {actual}")
+              if recorded_sha != operator_sha:
+                  print(f"Recorded SHA-256 drifted from operator manifest: {target}")
+                  sys.exit(1)
+              if actual != recorded_sha:
+                  print(f"Target migration SHA-256 changed after init: {target}")
+                  sys.exit(1)
+          print("Post-init target file identity PASS")
+          print("Operator SHA and intra-run rehash PASS")
+          PY
 
       - name: Link hosted development project
         run: |
@@ -218,7 +337,7 @@ jobs:
           import re
           import sys
 
-          version = os.environ["CONFIRM_MIGRATION_VERSION"]
+          expected = os.environ["EXPECTED_PENDING_VERSIONS_NORMALIZED"].split(",")
           text = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-before.txt").read_text()
 
           def parse_sets(text: str):
@@ -250,26 +369,46 @@ jobs:
           local, remote = parse_sets(text)
           pending = sorted(local - remote)
           remote_only = sorted(remote - local)
+          already_applied = sorted(set(expected) & remote)
+          missing_local = sorted(set(expected) - local)
+          unexpected = sorted(set(pending) - set(expected))
+          missing_pending = sorted(set(expected) - set(pending))
           print(f"local versions: {sorted(local)}")
           print(f"remote versions: {sorted(remote)}")
           print(f"pending versions: {pending}")
+          print(f"expected pending versions: {expected}")
           print(f"remote-only versions: {remote_only}")
           if remote_only:
               print("Remote-only migration divergence; refusing to push")
               sys.exit(1)
-          if version in remote:
-              print("Confirmed migration is already remote-applied; refusing to push")
+          if not pending:
+              print("No pending migration; refusing to push")
               sys.exit(1)
-          if version not in local:
-              print("Confirmed migration is not present locally in migration list; refusing to push")
+          if already_applied:
+              print(
+                  "Expected version is already remote-applied; refusing to push: "
+                  + ",".join(already_applied)
+              )
               sys.exit(1)
-          if len(pending) != 1:
-              print(f"Expected exactly one pending migration, found {len(pending)}")
+          if missing_local:
+              print(
+                  "Expected version is not present locally in migration list; refusing to push: "
+                  + ",".join(missing_local)
+              )
               sys.exit(1)
-          if pending[0] != version:
-              print(f"Pending migration {pending[0]} does not match confirm_migration_version")
+          if pending != expected:
+              if unexpected:
+                  print(
+                      "Unexpected pending migration; refusing to push: "
+                      + ",".join(unexpected)
+                  )
+              if missing_pending:
+                  print(
+                      "Expected pending migration is missing from the actual pending set: "
+                      + ",".join(missing_pending)
+                  )
               sys.exit(1)
-          print(f"Exactly-one-pending PASS: {version}")
+          print("Exact pending-set PASS: " + ",".join(expected))
           PY
 
       - name: Mandatory preflight dry-run
@@ -297,14 +436,18 @@ jobs:
           import re
           import sys
 
-          expected = os.environ["TARGET_MIGRATION_BASENAME"]
+          expected = os.environ["TARGET_MIGRATION_BASENAMES"].split(",")
+          expected_versions = os.environ["EXPECTED_PENDING_VERSIONS_NORMALIZED"].split(",")
           text = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "db-push-dry-run.txt").read_text()
           pending = sorted(set(re.findall(r"(\d{14}_[A-Za-z0-9_]+\.sql)", text)))
+          pending_versions = sorted({name[:14] for name in pending})
           print(f"dry-run pending SQL files: {pending}")
-          if len(pending) != 1 or pending[0] != expected:
-              print("Dry-run pending set is not exactly the confirmed target file")
+          print(f"dry-run pending versions: {pending_versions}")
+          print(f"expected pending SQL files: {expected}")
+          if pending != expected or pending_versions != expected_versions:
+              print("Dry-run pending set is not exactly the confirmed expected pending set")
               sys.exit(1)
-          print(f"Dry-run target verification PASS: {pending[0]}")
+          print("Dry-run target verification PASS: " + ",".join(pending))
           PY
 
       - name: Reconfirm ledger is unchanged after dry-run
@@ -329,7 +472,7 @@ jobs:
           import re
           import sys
 
-          version = os.environ["CONFIRM_MIGRATION_VERSION"]
+          expected = os.environ["EXPECTED_PENDING_VERSIONS_NORMALIZED"].split(",")
           before = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-before.txt").read_text()
           after = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-after-dry-run.txt").read_text()
 
@@ -368,11 +511,20 @@ jobs:
           pending = sorted(local - remote)
           remote_only = sorted(remote - local)
           print(f"post-dry-run pending versions: {pending}")
+          print(f"expected pending versions: {expected}")
           if remote_only:
               print("Remote-only divergence after dry-run; refusing to push")
               sys.exit(1)
-          if version in remote or version not in local or len(pending) != 1 or pending[0] != version:
-              print("Target is no longer the single local-only pending migration after dry-run")
+          already_applied = sorted(set(expected) & remote)
+          missing_local = sorted(set(expected) - local)
+          if already_applied or missing_local or pending != expected:
+              print("Declared pending set is no longer exactly the local-only pending set after dry-run")
+              if already_applied:
+                  print("already remote-applied: " + ",".join(already_applied))
+              if missing_local:
+                  print("missing locally: " + ",".join(missing_local))
+              if pending != expected:
+                  print(f"actual pending: {pending}")
               sys.exit(1)
           if version_lines(before) != version_lines(after):
               print("Dry-run changed migration ledger version rows; refusing to push")
@@ -384,7 +536,7 @@ jobs:
           print("Pre-apply second ledger check PASS; remote ledger unchanged")
           PY
 
-      - name: Apply the confirmed pending migration
+      - name: Apply the confirmed pending migrations
         run: |
           set -euo pipefail
           pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
@@ -415,7 +567,7 @@ jobs:
           import re
           import sys
 
-          version = os.environ["CONFIRM_MIGRATION_VERSION"]
+          expected = os.environ["EXPECTED_PENDING_VERSIONS_NORMALIZED"].split(",")
           text = Path(os.environ["RUNNER_TEMP"], "supabase-deploy", "migration-list-after.txt").read_text()
 
           def parse_sets(text: str):
@@ -448,15 +600,30 @@ jobs:
           print(f"AFTER local versions: {sorted(local)}")
           print(f"AFTER remote versions: {sorted(remote)}")
           print(f"AFTER pending versions: {pending}")
+          print(f"expected applied versions: {expected}")
           if remote_only:
               print("Remote-only divergence after apply")
               sys.exit(1)
-          if version not in local or version not in remote:
+          missing_local = sorted(set(expected) - local)
+          missing_remote = sorted(set(expected) - remote)
+          still_pending = sorted(set(expected) & set(pending))
+          if missing_local or missing_remote:
               print("Confirmed migration is not local+remote after apply")
+              if missing_local:
+                  print("missing locally: " + ",".join(missing_local))
+              if missing_remote:
+                  print("missing remotely: " + ",".join(missing_remote))
+              sys.exit(1)
+          if still_pending:
+              print(
+                  "Expected version remains pending after apply: "
+                  + ",".join(still_pending)
+              )
               sys.exit(1)
           if pending:
               print(f"Expected pending count 0 after apply, found {pending}")
               sys.exit(1)
           print("Post-apply ledger verification PASS")
+          print("All expected versions present on remote PASS")
           print("Pending count 0 PASS")
           PY
