@@ -7,6 +7,7 @@ import type {
   AdmissionSectionCitationRow,
   DocumentSubmissionCitationRow,
   DocumentSubmissionRow,
+  RequiredDocumentChoiceGroupCitationRow,
   RequiredDocumentChoiceGroupItemRow,
   RequiredDocumentCitationRow,
   RequiredDocumentRow,
@@ -159,6 +160,10 @@ export function assembleAdmissionDetailReadModel(
     input.scheduleCitations,
     (row: AdmissionScheduleCitationRow) => row.admission_schedule_id,
   );
+  const choiceGroupRelations = groupBy(
+    input.choiceGroupCitations,
+    (row: RequiredDocumentChoiceGroupCitationRow) => row.choice_group_id,
+  );
 
   const submissionsByDocumentId = groupBy(
     input.submissions,
@@ -231,6 +236,10 @@ export function assembleAdmissionDetailReadModel(
       items: sortChoiceGroupItems(
         itemsByGroupId.get(choiceGroup.id) ?? [],
         documentsById,
+      ),
+      citations: citationsFor(
+        choiceGroupRelations.get(choiceGroup.id) ?? [],
+        citationsById,
       ),
     }));
 

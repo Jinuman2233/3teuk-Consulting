@@ -89,6 +89,7 @@ export async function getAdmissionProgramDetailReadModelWithClient(
     children.documents.map((document) => document.id),
     submissions.map((submission) => submission.id),
     children.schedules.map((schedule) => schedule.id),
+    children.choiceGroups.map((group) => group.id),
   );
 
   const referencedCitationIds = collectRelationCitationIds([
@@ -96,6 +97,7 @@ export async function getAdmissionProgramDetailReadModelWithClient(
     ...citationRelations.documentCitations,
     ...citationRelations.submissionCitations,
     ...citationRelations.scheduleCitations,
+    ...citationRelations.choiceGroupCitations,
   ]);
 
   const citations = await fetchSourceCitations(supabase, referencedCitationIds);
@@ -124,6 +126,7 @@ export async function getAdmissionProgramDetailReadModelWithClient(
     documentCitations: citationRelations.documentCitations,
     submissionCitations: citationRelations.submissionCitations,
     scheduleCitations: citationRelations.scheduleCitations,
+    choiceGroupCitations: citationRelations.choiceGroupCitations,
   });
 
   return assembleAdmissionDetailReadModel({
@@ -141,6 +144,7 @@ export async function getAdmissionProgramDetailReadModelWithClient(
     documentCitations: citationRelations.documentCitations,
     submissionCitations: citationRelations.submissionCitations,
     scheduleCitations: citationRelations.scheduleCitations,
+    choiceGroupCitations: citationRelations.choiceGroupCitations,
     citations,
     sourceDocuments,
   });

@@ -19,6 +19,8 @@ import {
   DOCUMENT_SUBMISSION_COLUMNS,
   DOCUMENT_SUBMISSIONS_TABLE,
   REQUIRED_DOCUMENT_CHOICE_GROUP_COLUMNS,
+  REQUIRED_DOCUMENT_CHOICE_GROUP_CITATION_COLUMNS,
+  REQUIRED_DOCUMENT_CHOICE_GROUP_CITATIONS_TABLE,
   REQUIRED_DOCUMENT_CHOICE_GROUP_ITEM_COLUMNS,
   REQUIRED_DOCUMENT_CHOICE_GROUP_ITEMS_TABLE,
   REQUIRED_DOCUMENT_CHOICE_GROUPS_TABLE,
@@ -40,6 +42,7 @@ import type {
   AdmissionSectionRow,
   DocumentSubmissionCitationRow,
   DocumentSubmissionRow,
+  RequiredDocumentChoiceGroupCitationRow,
   RequiredDocumentChoiceGroupItemRow,
   RequiredDocumentChoiceGroupRow,
   RequiredDocumentCitationRow,
@@ -202,17 +205,20 @@ export async function fetchCitationRelations(
   documentIds: readonly string[],
   submissionIds: readonly string[],
   scheduleIds: readonly string[],
+  choiceGroupIds: readonly string[],
 ): Promise<{
   sectionCitations: AdmissionSectionCitationRow[];
   documentCitations: RequiredDocumentCitationRow[];
   submissionCitations: DocumentSubmissionCitationRow[];
   scheduleCitations: AdmissionScheduleCitationRow[];
+  choiceGroupCitations: RequiredDocumentChoiceGroupCitationRow[];
 }> {
   const [
     sectionCitations,
     documentCitations,
     submissionCitations,
     scheduleCitations,
+    choiceGroupCitations,
   ] = await Promise.all([
     selectByIds<AdmissionSectionCitationRow>(
       client,
@@ -246,6 +252,14 @@ export async function fetchCitationRelations(
       scheduleIds,
       `select ${ADMISSION_SCHEDULE_CITATIONS_TABLE}`,
     ),
+    selectByIds<RequiredDocumentChoiceGroupCitationRow>(
+      client,
+      REQUIRED_DOCUMENT_CHOICE_GROUP_CITATIONS_TABLE,
+      REQUIRED_DOCUMENT_CHOICE_GROUP_CITATION_COLUMNS,
+      "choice_group_id",
+      choiceGroupIds,
+      `select ${REQUIRED_DOCUMENT_CHOICE_GROUP_CITATIONS_TABLE}`,
+    ),
   ]);
 
   return {
@@ -253,6 +267,7 @@ export async function fetchCitationRelations(
     documentCitations,
     submissionCitations,
     scheduleCitations,
+    choiceGroupCitations,
   };
 }
 

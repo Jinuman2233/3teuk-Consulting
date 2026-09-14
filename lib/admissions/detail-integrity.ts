@@ -8,6 +8,7 @@ import type {
   AdmissionSectionRow,
   DocumentSubmissionCitationRow,
   DocumentSubmissionRow,
+  RequiredDocumentChoiceGroupCitationRow,
   RequiredDocumentChoiceGroupItemRow,
   RequiredDocumentChoiceGroupRow,
   RequiredDocumentCitationRow,
@@ -116,6 +117,7 @@ export function assertAdmissionDetailGraph(input: {
   documentCitations: readonly RequiredDocumentCitationRow[];
   submissionCitations: readonly DocumentSubmissionCitationRow[];
   scheduleCitations: readonly AdmissionScheduleCitationRow[];
+  choiceGroupCitations: readonly RequiredDocumentChoiceGroupCitationRow[];
 }): void {
   const { programId } = input;
 
@@ -204,6 +206,13 @@ export function assertAdmissionDetailGraph(input: {
       row.admission_schedule_id,
       scheduleIds,
       `admission_schedule_citation references admission_schedule ${row.admission_schedule_id} that was not loaded`,
+    );
+  }
+  for (const row of input.choiceGroupCitations) {
+    assertParentPresent(
+      row.choice_group_id,
+      choiceGroupIds,
+      `required_document_choice_group_citation references choice group ${row.choice_group_id} that was not loaded`,
     );
   }
 }

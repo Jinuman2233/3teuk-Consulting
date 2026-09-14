@@ -167,6 +167,11 @@ export type AdmissionScheduleCitationRow = {
   source_citation_id: string;
 };
 
+export type RequiredDocumentChoiceGroupCitationRow = {
+  choice_group_id: string;
+  source_citation_id: string;
+};
+
 export type SectionWithProvenance = {
   section: AdmissionSectionRow;
   citations: SourceCitationRow[];
@@ -193,6 +198,7 @@ export type RequiredDocumentWithProvenance = {
 export type ChoiceGroupWithItems = {
   choiceGroup: RequiredDocumentChoiceGroupRow;
   items: RequiredDocumentChoiceGroupItemRow[];
+  citations: SourceCitationRow[];
 };
 
 export type AdmissionProgramDetailReadModel = {
@@ -222,6 +228,7 @@ export type AdmissionDetailAssemblyInput = {
   documentCitations: RequiredDocumentCitationRow[];
   submissionCitations: DocumentSubmissionCitationRow[];
   scheduleCitations: AdmissionScheduleCitationRow[];
+  choiceGroupCitations: RequiredDocumentChoiceGroupCitationRow[];
   citations: SourceCitationRow[];
   sourceDocuments: SourceDocumentSummary[];
 };

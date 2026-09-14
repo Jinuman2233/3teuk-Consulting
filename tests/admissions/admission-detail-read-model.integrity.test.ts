@@ -61,6 +61,7 @@ test("valid synthetic baseline returns a serializable read model", async () => {
   assert.equal(result.requiredDocuments[0]?.submissions.length, 1);
   assert.equal(result.choiceGroups.length, 1);
   assert.equal(result.choiceGroups[0]?.items.length, 1);
+  assert.equal(result.choiceGroups[0]?.citations.length, 0);
   assert.equal(result.programSources.length, 1);
   assert.deepEqual(Object.keys(result.sourcesById), [SYNTHETIC.sourceId]);
   assert.equal("hasConflict" in result, false);
@@ -74,8 +75,13 @@ test("valid synthetic baseline returns a serializable read model", async () => {
   assert.equal(json.includes("[object Map]"), false);
 
   const tables = queryTables(calls);
-  assert.ok(tables.length <= 16);
-  assert.equal(tables.length, 16);
+  assert.ok(tables.length <= 17);
+  assert.equal(tables.length, 17);
+  assert.equal(
+    tables.filter((name) => name === "required_document_choice_group_citations")
+      .length,
+    1,
+  );
   for (const table of tables) {
     assert.equal(
       tables.filter((name) => name === table).length,
@@ -328,4 +334,120 @@ test("missing SourceDocument for ProgramSource is INTEGRITY_VIOLATION", async ()
   const dataset = createValidDataset();
   dataset.source_documents = [];
   await expectIntegrityViolation(() => loadReadModel(dataset));
+});
+
+test("ChoiceGroup citation relation loads without inheriting member citations", async () => {
+  const { result } = await loadReadModel(
+    createValidDataset({ includeChoiceGroupCitation: true }),
+  );
+  assert.ok(result);
+  const group = result.choiceGroups[0];
+  assert.ok(group);
+  assert.equal(group.citations.length, 1);
+  assert.equal(group.citations[0]?.id, SYNTHETIC.choiceGroupCitationId);
+  assert.equal(group.citations[0]?.file_page_number, 1);
+  assert.equal(group.citations[0]?.source_document_id, SYNTHETIC.sourceId);
+  assert.ok(result.sourcesById[SYNTHETIC.sourceId]);
+  assert.deepEqual(
+    result.requiredDocuments[0]?.citations.map((citation) => citation.id),
+    [SYNTHETIC.citationId],
+  );
+  assert.equal(
+    group.citations.some((citation) => citation.id === SYNTHETIC.citationId),
+    false,
+  );
+});
+
+test("ChoiceGroup citation missing SourceCitation is INTEGRITY_VIOLATION", async () => {
+  const dataset = createValidDataset({ includeChoiceGroupCitation: true });
+  const relation = dataset.required_document_choice_group_citations[0];
+  assert.ok(relation);
+  relation.source_citation_id = SYNTHETIC.unknownId;
+  await expectIntegrityViolation(() => loadReadModel(dataset));
+});
+
+test("ChoiceGroup citation outside ProgramSource inventory is INTEGRITY_VIOLATION", async () => {
+  const dataset = createValidDataset();
+  dataset.source_citations.push(outsideInventoryCitation());
+  dataset.required_document_choice_group_citations.push({
+    choice_group_id: SYNTHETIC.choiceGroupId,
+    source_citation_id: SYNTHETIC.outsideCitationId,
+  });
+  await expectIntegrityViolation(() => loadReadModel(dataset));
+});
+
+test("ChoiceGroup citation for unloaded group is INTEGRITY_VIOLATION", async () => {
+  const dataset = createValidDataset({ includeChoiceGroupCitation: true });
+  await expectIntegrityViolation(() =>
+    loadReadModel(dataset, {
+      injectAfterFilter: {
+        required_document_choice_group_citations: [
+          {
+            choice_group_id: SYNTHETIC.unknownId,
+            source_citation_id: SYNTHETIC.choiceGroupCitationId,
+          },
+        ],
+      },
+    }),
+  );
+});
+
+test("ChoiceGroup citations stay isolated between groups", async () => {
+  const dataset = createValidDataset({ includeChoiceGroupCitation: true });
+  const firstGroup = dataset.required_document_choice_groups[0];
+  assert.ok(firstGroup);
+  dataset.required_document_choice_groups.push({
+    ...firstGroup,
+    id: SYNTHETIC.choiceGroupId2,
+    display_order: 2,
+  });
+  const firstCitation = dataset.source_citations[0];
+  assert.ok(firstCitation);
+  dataset.source_citations.push({
+    ...firstCitation,
+    id: SYNTHETIC.choiceGroupCitationId2,
+  });
+  dataset.required_document_choice_group_citations.push({
+    choice_group_id: SYNTHETIC.choiceGroupId2,
+    source_citation_id: SYNTHETIC.choiceGroupCitationId2,
+  });
+
+  const { result } = await loadReadModel(dataset);
+  assert.ok(result);
+  assert.equal(result.choiceGroups.length, 2);
+  const first = result.choiceGroups.find(
+    (group) => group.choiceGroup.id === SYNTHETIC.choiceGroupId,
+  );
+  const second = result.choiceGroups.find(
+    (group) => group.choiceGroup.id === SYNTHETIC.choiceGroupId2,
+  );
+  assert.ok(first);
+  assert.ok(second);
+  assert.deepEqual(
+    first.citations.map((citation) => citation.id),
+    [SYNTHETIC.choiceGroupCitationId],
+  );
+  assert.deepEqual(
+    second.citations.map((citation) => citation.id),
+    [SYNTHETIC.choiceGroupCitationId2],
+  );
+});
+
+test("ChoiceGroup citation query error is QUERY_FAILED", async () => {
+  await assert.rejects(
+    () =>
+      loadReadModel(createValidDataset(), {
+        queryErrors: {
+          required_document_choice_group_citations: {
+            message: "choice group citations select failed",
+          },
+        },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof AdmissionsQueryError);
+      assert.equal(error instanceof AdmissionsIntegrityError, false);
+      assert.equal(error.code, "QUERY_FAILED");
+      return true;
+    },
+  );
 });

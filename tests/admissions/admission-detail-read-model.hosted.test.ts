@@ -40,12 +40,17 @@ function countCitationAttachments(model: AdmissionProgramDetailReadModel) {
     (sum, item) => sum + item.citations.length,
     0,
   );
+  const choiceGroup = model.choiceGroups.reduce(
+    (sum, item) => sum + item.citations.length,
+    0,
+  );
   return {
     section,
     document,
     submission,
     schedule,
-    total: section + document + submission + schedule,
+    choiceGroup,
+    total: section + document + submission + schedule + choiceGroup,
   };
 }
 
@@ -63,6 +68,9 @@ function uniqueCitationIds(model: AdmissionProgramDetailReadModel): Set<string> 
   for (const item of model.schedules) {
     for (const citation of item.citations) ids.add(citation.id);
   }
+  for (const group of model.choiceGroups) {
+    for (const citation of group.citations) ids.add(citation.id);
+  }
   return ids;
 }
 
@@ -74,6 +82,7 @@ function allCitations(model: AdmissionProgramDetailReadModel) {
       ...item.submissions.flatMap((submission) => submission.citations),
     ]),
     ...model.schedules.flatMap((item) => item.citations),
+    ...model.choiceGroups.flatMap((group) => group.citations),
   ];
 }
 
@@ -138,6 +147,10 @@ test(
     assert.equal(attachments.document, KU_2027.expected.documentCitations);
     assert.equal(attachments.submission, KU_2027.expected.submissionCitations);
     assert.equal(attachments.schedule, KU_2027.expected.scheduleCitations);
+    assert.equal(
+      attachments.choiceGroup,
+      KU_2027.expected.choiceGroupCitations,
+    );
     assert.equal(attachments.total, KU_2027.expected.citationRelations);
     assert.equal(
       uniqueCitationIds(model).size,
@@ -180,6 +193,22 @@ test(
       model.requiredDocuments.map((item) => item.document.id),
     );
     assert.equal(model.choiceGroups.length, 1);
+    const cg01 = model.choiceGroups[0];
+    assert.ok(cg01);
+    assert.equal(cg01.choiceGroup.id, KU_2027.cg01Id);
+    assert.equal(cg01.choiceGroup.title, "부모 사망 시 제출 서류");
+    assert.equal(
+      cg01.choiceGroup.rule_text,
+      "부모가 사망한 경우 기본증명서(상세) 또는 제적등본 1부 (사망한 부 또는 모 기준)",
+    );
+    assert.equal(cg01.choiceGroup.condition, "부모가 사망한 경우");
+    assert.equal(cg01.choiceGroup.verification_status, "verified");
+    assert.equal(cg01.citations.length, 1);
+    assert.equal(cg01.citations[0]?.id, KU_2027.cit34Id);
+    assert.equal(cg01.citations[0]?.source_document_id, KU_2027.s01Id);
+    assert.equal(cg01.citations[0]?.file_page_number, 13);
+    assert.equal(cg01.citations[0]?.printed_page_label, "13");
+    assert.equal(cg01.citations[0]?.section, "가족관계증명서 유의사항");
     for (const group of model.choiceGroups) {
       for (const item of group.items) {
         assert.equal(item.choice_group_id, group.choiceGroup.id);

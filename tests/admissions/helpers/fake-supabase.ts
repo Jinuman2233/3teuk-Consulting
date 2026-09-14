@@ -17,6 +17,7 @@ export const FAKE_TABLES = [
   "required_document_citations",
   "document_submission_citations",
   "admission_schedule_citations",
+  "required_document_choice_group_citations",
 ] as const;
 
 export type FakeTable = (typeof FAKE_TABLES)[number];
@@ -52,6 +53,7 @@ const ALLOWED_FILTER_COLUMNS: Record<FakeTable, ReadonlySet<string>> = {
   required_document_citations: new Set(["required_document_id"]),
   document_submission_citations: new Set(["document_submission_id"]),
   admission_schedule_citations: new Set(["admission_schedule_id"]),
+  required_document_choice_group_citations: new Set(["choice_group_id"]),
 };
 
 export type FakeClientOptions = {
