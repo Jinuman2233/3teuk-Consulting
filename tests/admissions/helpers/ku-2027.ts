@@ -19,6 +19,8 @@ export const KU_2027 = {
   s05HtmlId: "b17b767f-7eaf-4e12-a2db-6dcf4f024c25",
   s05PdfId: "31c298f9-cde7-407b-be2d-692235e1a391",
   s06Id: "91ce33c3-e327-4681-a267-04c1ba32c172",
+  cg01Id: "ae4b32a8-8ef9-409d-848d-e8f9ff84956f",
+  cit34Id: "6cc44f83-0936-4f73-9e97-a5ff99ce87fd",
   expected: {
     sections: 17,
     schedules: 15,
@@ -32,7 +34,8 @@ export const KU_2027 = {
     documentCitations: 56,
     submissionCitations: 90,
     scheduleCitations: 30,
-    citationRelations: 200,
-    uniqueCitations: 33,
+    choiceGroupCitations: 1,
+    citationRelations: 201,
+    uniqueCitations: 34,
   },
 } as const;

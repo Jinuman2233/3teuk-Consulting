@@ -7,6 +7,7 @@ import type {
   AdmissionSectionRow,
   DocumentSubmissionCitationRow,
   DocumentSubmissionRow,
+  RequiredDocumentChoiceGroupCitationRow,
   RequiredDocumentChoiceGroupItemRow,
   RequiredDocumentChoiceGroupRow,
   RequiredDocumentCitationRow,
@@ -29,6 +30,9 @@ export const SYNTHETIC = {
   sourceId: "aaaaaaaa-aaaa-4aaa-8aaa-000000000009",
   citationId: "aaaaaaaa-aaaa-4aaa-8aaa-00000000000a",
   citationId2: "aaaaaaaa-aaaa-4aaa-8aaa-00000000000b",
+  choiceGroupCitationId: "aaaaaaaa-aaaa-4aaa-8aaa-00000000000e",
+  choiceGroupId2: "aaaaaaaa-aaaa-4aaa-8aaa-00000000000f",
+  choiceGroupCitationId2: "aaaaaaaa-aaaa-4aaa-8aaa-000000000010",
   outsideSourceId: "aaaaaaaa-aaaa-4aaa-8aaa-00000000000c",
   outsideCitationId: "aaaaaaaa-aaaa-4aaa-8aaa-00000000000d",
   unknownId: "bbbbbbbb-bbbb-4bbb-8bbb-000000000001",
@@ -256,16 +260,32 @@ function scheduleCitation(): AdmissionScheduleCitationRow {
   };
 }
 
+function choiceGroupCitation(
+  choiceGroupId: string = SYNTHETIC.choiceGroupId,
+  citationId: string = SYNTHETIC.choiceGroupCitationId,
+): RequiredDocumentChoiceGroupCitationRow {
+  return {
+    choice_group_id: choiceGroupId,
+    source_citation_id: citationId,
+  };
+}
+
 export function createValidDataset(options?: {
   admissionCategoryId?: string | null;
   admissionScheduleId?: string | null;
   extraSectionCitation?: boolean;
+  includeChoiceGroupCitation?: boolean;
 }): FakeDataset {
   const citations = [citation()];
   const sectionCitations = [sectionCitation()];
+  const choiceGroupCitations: RequiredDocumentChoiceGroupCitationRow[] = [];
   if (options?.extraSectionCitation) {
     citations.push(citation(SYNTHETIC.citationId2));
     sectionCitations.push(sectionCitation(SYNTHETIC.citationId2));
+  }
+  if (options?.includeChoiceGroupCitation) {
+    citations.push(citation(SYNTHETIC.choiceGroupCitationId));
+    choiceGroupCitations.push(choiceGroupCitation());
   }
 
   return {
@@ -285,6 +305,7 @@ export function createValidDataset(options?: {
     required_document_citations: [documentCitation()],
     document_submission_citations: [submissionCitation()],
     admission_schedule_citations: [scheduleCitation()],
+    required_document_choice_group_citations: choiceGroupCitations,
   };
 }
 

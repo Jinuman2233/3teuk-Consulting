@@ -17,6 +17,8 @@ export const REQUIRED_DOCUMENT_CITATIONS_TABLE = "required_document_citations";
 export const DOCUMENT_SUBMISSION_CITATIONS_TABLE =
   "document_submission_citations";
 export const ADMISSION_SCHEDULE_CITATIONS_TABLE = "admission_schedule_citations";
+export const REQUIRED_DOCUMENT_CHOICE_GROUP_CITATIONS_TABLE =
+  "required_document_choice_group_citations";
 
 export const ADMISSION_CATEGORY_COLUMNS =
   "id, code, label, description, created_at, updated_at";
@@ -60,3 +62,6 @@ export const DOCUMENT_SUBMISSION_CITATION_COLUMNS =
 
 export const ADMISSION_SCHEDULE_CITATION_COLUMNS =
   "admission_schedule_id, source_citation_id";
+
+export const REQUIRED_DOCUMENT_CHOICE_GROUP_CITATION_COLUMNS =
+  "choice_group_id, source_citation_id";
