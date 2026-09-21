@@ -1,6 +1,8 @@
 /**
- * Hosted acceptance constants from
- * supabase/migrations/20260905160000_load_ku_2027_reentry.sql
+ * Hosted acceptance constants for the current KU 2027 graph.
+ * Historical SRC07 / CIT30 remain in the database but are no longer
+ * current ProgramSource / SUB82 citation identities after
+ * 20260921190000_add_ku_2027_s05_pdf_revision.sql.
  * These belong in tests only, not production lib/.
  */
 
@@ -13,11 +15,11 @@ export const KU_2027 = {
   cit31Id: "b03a90b5-c3d5-42ea-b6ff-1ff61ebb4416",
   cit07Id: "79281172-a2c1-4e20-919e-d31c1ef1ada2",
   cit27Id: "ebff4f8d-115a-4f44-939a-f1d3bc74315e",
-  cit30Id: "1f779f06-95f7-4520-890a-e5c30560c33e",
+  cit30Id: "eb6af150-393f-45ec-ae98-c7ac04e01083",
   sch11Id: "8a3e7f88-b24d-4822-9737-485c2539c8cf",
   s01Id: "316d1a61-6119-4d15-ac69-5395279ff99a",
   s05HtmlId: "b17b767f-7eaf-4e12-a2db-6dcf4f024c25",
-  s05PdfId: "31c298f9-cde7-407b-be2d-692235e1a391",
+  s05PdfId: "e2c8f9d5-1a51-44ba-8cd0-725bddd90dfd",
   s06Id: "91ce33c3-e327-4681-a267-04c1ba32c172",
   cg01Id: "ae4b32a8-8ef9-409d-848d-e8f9ff84956f",
   cit34Id: "6cc44f83-0936-4f73-9e97-a5ff99ce87fd",
@@ -33,9 +35,9 @@ export const KU_2027 = {
     sectionCitations: 24,
     documentCitations: 56,
     submissionCitations: 90,
-    scheduleCitations: 30,
+    scheduleCitations: 31,
     choiceGroupCitations: 1,
-    citationRelations: 201,
-    uniqueCitations: 34,
+    citationRelations: 202,
+    uniqueCitations: 35,
   },
 } as const;
