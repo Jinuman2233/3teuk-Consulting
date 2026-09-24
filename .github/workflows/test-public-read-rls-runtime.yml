@@ -1,0 +1,146 @@
+name: Test Public Read RLS Runtime
+
+on:
+  workflow_dispatch:
+  # GitHub only lists workflow_dispatch from the default branch.
+  # This temporary proof branch is not merged to main, so a
+  # branch-scoped push trigger is required to actually run here.
+  push:
+    branches:
+      - test/public-read-rls-runtime-ci
+
+permissions:
+  contents: read
+
+# Temporary PostgreSQL 17 runtime validation for public-read RLS.
+# Hosted destination is not used. No CLI link/push. No project secrets.
+# Proof branch only. Do not merge to main or security/public-read-rls.
+
+jobs:
+  postgres-runtime-validation:
+    name: PostgreSQL 17 public-read RLS runtime validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      SCHEMA_FILE: supabase/migrations/20260825155343_initial_schema.sql
+      KU_FILE: supabase/migrations/20260905160000_load_ku_2027_reentry.sql
+      RLS_FILE: supabase/migrations/20260907081000_public_read_rls.sql
+      EXPECTED_KU_SHA256: a1214d772731aa53c0502f57086927fedc925b0b2f7d20ccce82c45b7c18c116
+      EXPECTED_RLS_SHA256: 3942e48ced00c46b58fe7fb6916d001ece5a89493a3514ca980ac78c88ecfc26
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install PostgreSQL client
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Workflow self-check — no hosted destination or CLI secrets
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          files = [
+            Path(".github/workflows/test-public-read-rls-runtime.yml"),
+            Path(".github/workflows/rls-runtime/run-public-read-rls-runtime.sh"),
+          ]
+          needles = [
+              "SUPABASE" + "_ACCESS_TOKEN",
+              "SUPABASE" + "_DB_PASSWORD",
+              "SUPABASE" + "_PROJECT_ID",
+              "supabase " + "link",
+              "supabase " + "db push",
+              "styubtgvdjce" + "ulfurskb",
+          ]
+          failed = False
+          for path in files:
+              text = path.read_text()
+              for needle in needles:
+                  if needle in text:
+                      print(f"FORBIDDEN string present in {path}: {needle}")
+                      failed = True
+          if failed:
+              raise SystemExit(1)
+          print("workflow self-check PASS: no hosted secrets, CLI link/push, or hosted destination")
+          PY
+
+      - name: Confirm production migration SHA-256 before runtime
+        run: |
+          set -euo pipefail
+          test -f "$SCHEMA_FILE"
+          test -f "$KU_FILE"
+          test -f "$RLS_FILE"
+          mapfile -t migration_files < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort)
+          if [ "${#migration_files[@]}" -ne 3 ]; then
+            echo "Expected exactly three SQL migrations, found ${#migration_files[@]}"
+            printf '%s\n' "${migration_files[@]}"
+            exit 1
+          fi
+          ku_sha="$(sha256sum "$KU_FILE" | awk '{print $1}')"
+          rls_sha="$(sha256sum "$RLS_FILE" | awk '{print $1}')"
+          echo "KU SHA-256=${ku_sha}"
+          echo "RLS SHA-256=${rls_sha}"
+          if [ "$ku_sha" != "$EXPECTED_KU_SHA256" ]; then
+            echo "KU migration SHA-256 changed; refusing to run"
+            exit 1
+          fi
+          if [ "$rls_sha" != "$EXPECTED_RLS_SHA256" ]; then
+            echo "RLS migration SHA-256 changed; refusing to run"
+            exit 1
+          fi
+          echo "migration SHA integrity PASS (before runtime)"
+
+      - name: Confirm PostgreSQL 17 client and server
+        run: |
+          set -euo pipefail
+          echo "=== psql --version ==="
+          psql --version
+          echo "=== SELECT version(); ==="
+          psql -d postgres -v ON_ERROR_STOP=1 -c "SELECT version();"
+          major="$(psql -d postgres -v ON_ERROR_STOP=1 -Atc "SHOW server_version_num;")"
+          echo "server_version_num=${major}"
+          if [ "${major:0:2}" != "17" ]; then
+            echo "PostgreSQL server major version is not 17"
+            exit 1
+          fi
+
+      - name: Run public-read RLS runtime scenarios
+        run: bash .github/workflows/rls-runtime/run-public-read-rls-runtime.sh
+
+      - name: Confirm production migration SHA-256 after runtime
+        run: |
+          set -euo pipefail
+          ku_sha="$(sha256sum "$KU_FILE" | awk '{print $1}')"
+          rls_sha="$(sha256sum "$RLS_FILE" | awk '{print $1}')"
+          echo "KU SHA-256 after=${ku_sha}"
+          echo "RLS SHA-256 after=${rls_sha}"
+          if [ "$ku_sha" != "$EXPECTED_KU_SHA256" ]; then
+            echo "KU migration SHA-256 changed during runtime"
+            exit 1
+          fi
+          if [ "$rls_sha" != "$EXPECTED_RLS_SHA256" ]; then
+            echo "RLS migration SHA-256 changed during runtime"
+            exit 1
+          fi
+          echo "migration SHA integrity PASS (after runtime)"
