@@ -30,6 +30,12 @@ permissions:
 # PostgreSQL explicit-transaction rollback probe: PASS (separate runtime test).
 # Supabase CLI failure rollback semantics: NOT PROVEN.
 # Do not assume this CLI run wraps the SQL files in one transaction.
+# Database operations use the operator-supplied SUPABASE_DB_URL secret as-is.
+# That secret is the Supabase Session pooler URI (IPv4, port 5432).
+# This workflow does not assemble a hostname, username, or password.
+# It does not use the transaction pooler (port 6543).
+# It does not use the direct db.<project>.supabase.co endpoint.
+# supabase link stays a management-level project identity check only.
 
 jobs:
   deploy-dev-migrations:
@@ -39,6 +45,7 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
       CONFIRM_PROJECT_REF: ${{ inputs.confirm_project_ref }}
       EXPECTED_PENDING_MANIFEST: ${{ inputs.expected_pending_manifest }}
@@ -77,6 +84,10 @@ jobs:
           fi
           if [ -z "${SUPABASE_PROJECT_ID:-}" ]; then
             echo "SUPABASE_PROJECT_ID is not set"
+            exit 1
+          fi
+          if [ -z "${SUPABASE_DB_URL:-}" ]; then
+            echo "SUPABASE_DB_URL is not configured."
             exit 1
           fi
           echo "Required secrets are set"
@@ -317,18 +328,16 @@ jobs:
       - name: Migration list BEFORE apply
         run: |
           set -euo pipefail
-          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
-          pw="${pw#"${pw%%[![:space:]]*}"}"
-          pw="${pw%"${pw##*[![:space:]]}"}"
+          # Remote read uses SUPABASE_DB_URL (IPv4 session pooler, port 5432).
           mkdir -p "$RUNNER_TEMP/supabase-deploy"
           set +e
-          before_output="$(supabase migration list --linked --password "$pw" 2>&1)"
+          before_output="$(supabase migration list --db-url "$SUPABASE_DB_URL" 2>&1)"
           before_status=$?
           set -e
           printf '%s\n' "$before_output"
           printf '%s\n' "$before_output" > "$RUNNER_TEMP/supabase-deploy/migration-list-before.txt"
           if [ "$before_status" -ne 0 ]; then
-            echo "supabase migration list --linked failed before apply"
+            echo "supabase migration list --db-url failed before apply"
             exit "$before_status"
           fi
           python3 - <<'PY'
@@ -414,12 +423,10 @@ jobs:
       - name: Mandatory preflight dry-run
         run: |
           set -euo pipefail
-          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
-          pw="${pw#"${pw%%[![:space:]]*}"}"
-          pw="${pw%"${pw##*[![:space:]]}"}"
+          # Dry-run uses SUPABASE_DB_URL (IPv4 session pooler, port 5432).
           set +e
           dry_run_output="$(
-            supabase db push --dry-run --linked --password "$pw" 2>&1
+            supabase db push --db-url "$SUPABASE_DB_URL" --dry-run 2>&1
           )"
           dry_run_status=$?
           set -e
@@ -453,17 +460,15 @@ jobs:
       - name: Reconfirm ledger is unchanged after dry-run
         run: |
           set -euo pipefail
-          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
-          pw="${pw#"${pw%%[![:space:]]*}"}"
-          pw="${pw%"${pw##*[![:space:]]}"}"
+          # Post-dry-run ledger read uses SUPABASE_DB_URL (IPv4 session pooler, port 5432).
           set +e
-          mid_output="$(supabase migration list --linked --password "$pw" 2>&1)"
+          mid_output="$(supabase migration list --db-url "$SUPABASE_DB_URL" 2>&1)"
           mid_status=$?
           set -e
           printf '%s\n' "$mid_output"
           printf '%s\n' "$mid_output" > "$RUNNER_TEMP/supabase-deploy/migration-list-after-dry-run.txt"
           if [ "$mid_status" -ne 0 ]; then
-            echo "supabase migration list --linked failed after dry-run"
+            echo "supabase migration list --db-url failed after dry-run"
             exit "$mid_status"
           fi
           python3 - <<'PY'
@@ -539,26 +544,22 @@ jobs:
       - name: Apply the confirmed pending migrations
         run: |
           set -euo pipefail
-          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
-          pw="${pw#"${pw%%[![:space:]]*}"}"
-          pw="${pw%"${pw##*[![:space:]]}"}"
-          supabase db push --linked --password "$pw"
-          echo "supabase db push --linked finished"
+          # Single apply uses SUPABASE_DB_URL (IPv4 session pooler, port 5432).
+          supabase db push --db-url "$SUPABASE_DB_URL"
+          echo "supabase db push finished"
 
       - name: Migration list AFTER apply
         run: |
           set -euo pipefail
-          pw=$(printf '%s' "$SUPABASE_DB_PASSWORD" | tr -d '\r')
-          pw="${pw#"${pw%%[![:space:]]*}"}"
-          pw="${pw%"${pw##*[![:space:]]}"}"
+          # Post-apply ledger read uses SUPABASE_DB_URL (IPv4 session pooler, port 5432).
           set +e
-          after_output="$(supabase migration list --linked --password "$pw" 2>&1)"
+          after_output="$(supabase migration list --db-url "$SUPABASE_DB_URL" 2>&1)"
           after_status=$?
           set -e
           printf '%s\n' "$after_output"
           printf '%s\n' "$after_output" > "$RUNNER_TEMP/supabase-deploy/migration-list-after.txt"
           if [ "$after_status" -ne 0 ]; then
-            echo "supabase migration list --linked failed after apply"
+            echo "supabase migration list --db-url failed after apply"
             exit "$after_status"
           fi
           python3 - <<'PY'
